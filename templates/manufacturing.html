@@ -1,0 +1,126 @@
+{% extends 'base.html' %}
+{% block title %}Manufacturing System - Kitchen Factory{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Manufacturing System</h1>
+        <p class="muted">Create manufactured stock from existing stock items. No separate manufacturing inventory is used.</p>
+    </div>
+</div>
+
+<form method="post" id="manufacturing-form">
+    <div class="two-column">
+        <section class="card">
+            <h2>Manufactured Output</h2>
+            <label>Stock Item to Produce
+                <select name="output_item_id" id="output-item" required>
+                    <option value="">Select an existing stock item</option>
+                    {% for item in output_stock %}
+                    <option value="{{ item['id'] }}" data-unit="{{ item['unit'] }}">{{ item['code'] }} — {{ item['name'] }} ({{ item['unit'] }})</option>
+                    {% else %}
+                    <option value="" disabled>No Manufactured Item stock items are available</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Output Quantity
+                <input type="number" name="actual_output" id="output-quantity" min="0.001" step="0.001" placeholder="0.000" required>
+            </label>
+            <label>Notes<textarea name="notes" placeholder="Add manufacturing notes" {% if require_notes %}required{% endif %}></textarea></label>
+            {% if require_confirmation %}<label class="setting-toggle"><input type="checkbox" name="confirmation" value="1" required> I confirm this manufacturing transaction</label>{% endif %}
+        </section>
+
+        <section class="card manufacturing-summary">
+            <h2>Review Before Processing</h2>
+            <dl>
+                <dt>Manufactured Item</dt><dd id="summary-output">Not selected</dd>
+                <dt>Output Quantity</dt><dd id="summary-quantity">0.000</dd>
+                <dt>Total Ingredient Quantity</dt><dd id="summary-input">0.000</dd>
+                <dt>Total Ingredient Cost</dt><dd id="summary-cost">R0.00</dd>
+                <dt>Manufactured Cost Per Unit</dt><dd id="summary-unit-cost">R0.00</dd>
+            </dl>
+            <p class="muted">Ingredient stock reductions are listed below and applied only after confirmation.</p>
+            <button type="submit" class="primary-btn">Process Manufacturing Transaction</button>
+        </section>
+    </div>
+
+    <section class="card">
+        <h2>Manufacturing Ingredients</h2>
+        <p class="muted">Enter a quantity for each existing stock item to consume. Costs use the current stock item cost per unit.</p>
+        <div class="table-scroll">
+            <table id="ingredient-grid">
+                <thead><tr><th>Use</th><th>Stock Item</th><th>Available</th><th>Unit</th><th>Cost / Unit</th><th>Quantity to Consume</th><th>Ingredient Cost</th></tr></thead>
+                <tbody>
+                    {% for item in stock %}
+                    <tr data-item-id="{{ item['id'] }}" data-unit="{{ item['unit'] }}" data-unit-cost="{{ item['unit_cost'] }}">
+                        <td><input type="checkbox" class="ingredient-toggle" aria-label="Use {{ item['name'] }}"></td>
+                        <td>{{ item['code'] }} — {{ item['name'] }}</td>
+                        <td>{{ item['quantity'] }}</td>
+                        <td>{{ item['unit'] }}</td>
+                        <td>R{{ item['unit_cost'] }}</td>
+                        <td><input type="number" class="ingredient-quantity" name="ingredient_{{ item['id'] }}_qty" min="0" step="0.001" value="0" disabled></td>
+                        <td class="ingredient-cost">R0.00</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</form>
+
+<section class="card">
+    <h2>Recent Manufacturing Transactions</h2>
+    <table>
+        <thead><tr><th>Transaction</th><th>Date</th><th>User</th><th>Output</th><th>Quantity</th><th>Total Cost</th><th>Cost / Unit</th></tr></thead>
+        <tbody>
+            {% for row in history %}
+            <tr><td>MFG-{{ row['id'] }}</td><td>{{ row['manufacturing_date'] }}</td><td>{{ row['user_name'] }}</td><td>{{ row['output_name'] }}</td><td>{{ row['actual_output'] }}</td><td>R{{ row['total_cost'] }}</td><td>R{{ row['cost_per_unit'] }}</td></tr>
+            {% else %}
+            <tr><td colspan="7" class="muted">No manufacturing transactions yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+<script>
+    (function () {
+        var form = document.getElementById('manufacturing-form');
+        var output = document.getElementById('output-item');
+        var outputQuantity = document.getElementById('output-quantity');
+        var rows = Array.from(document.querySelectorAll('#ingredient-grid tbody tr'));
+        function money(value) { return 'R' + value.toFixed(2); }
+        function updateSummary() {
+            var totalQuantity = 0;
+            var totalCost = 0;
+            rows.forEach(function (row) {
+                var input = row.querySelector('.ingredient-quantity');
+                var quantity = Number(input.value) || 0;
+                var cost = quantity * (Number(row.dataset.unitCost) || 0);
+                totalQuantity += quantity;
+                totalCost += cost;
+                row.querySelector('.ingredient-cost').textContent = money(cost);
+            });
+            var quantity = Number(outputQuantity.value) || 0;
+            document.getElementById('summary-output').textContent = output.value ? output.options[output.selectedIndex].text : 'Not selected';
+            document.getElementById('summary-quantity').textContent = quantity.toFixed(3) + ' ' + (output.options[output.selectedIndex] ? output.options[output.selectedIndex].dataset.unit || '' : '');
+            document.getElementById('summary-input').textContent = totalQuantity.toFixed(3);
+            document.getElementById('summary-cost').textContent = money(totalCost);
+            document.getElementById('summary-unit-cost').textContent = money(quantity > 0 ? totalCost / quantity : 0);
+        }
+        rows.forEach(function (row) {
+            var toggle = row.querySelector('.ingredient-toggle');
+            var input = row.querySelector('.ingredient-quantity');
+            toggle.addEventListener('change', function () { input.disabled = !toggle.checked; if (!toggle.checked) input.value = '0'; updateSummary(); });
+            input.addEventListener('input', updateSummary);
+        });
+        output.addEventListener('change', updateSummary);
+        outputQuantity.addEventListener('input', updateSummary);
+        form.addEventListener('submit', function (event) {
+            if (!output.value || !(Number(outputQuantity.value) > 0) || !rows.some(function (row) { return Number(row.querySelector('.ingredient-quantity').value) > 0; })) {
+                event.preventDefault();
+                window.alert('Select an output, enter an output quantity, and add at least one ingredient quantity.');
+            }
+        });
+        updateSummary();
+    }());
+</script>
+{% endblock %}

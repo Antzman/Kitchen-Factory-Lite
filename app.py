@@ -1,0 +1,467 @@
+from __future__ import annotations
+
+import csv
+import io
+from datetime import datetime
+from decimal import Decimal
+
+from flask import Flask, flash, redirect, render_template, request, session, url_for
+
+from db import get_db_connection, init_db, seed_data
+from services import (
+    add_audit,
+    audit_entries,
+    create_bulk_portioning,
+    create_category,
+    create_manufacturing_transaction,
+    create_stock_item,
+    create_yield_loss_portioning,
+    dashboard_metrics,
+    get_user_by_username,
+    get_settings,
+    get_setting,
+    import_stock_items,
+    list_categories,
+    list_manufacturing_history,
+    list_recent_portioning,
+    list_stock_items,
+    stock_item_report,
+    parse_csv,
+    set_stock_item_active,
+    set_setting,
+    update_stock_item,
+    validate_import_rows,
+    update_settings,
+    list_users,
+    create_user,
+    update_user,
+    update_category,
+    set_category_active,
+)
+from settings import settings_by_section
+
+
+def create_app():
+    app = Flask(__name__)
+    app.secret_key = 'kitchen-factory-secret-key'
+
+    first_run = init_db()
+    seed_data()
+    app.config['FIRST_RUN'] = first_run
+
+    @app.context_processor
+    def inject_settings():
+        return {'settings': get_settings()}
+
+    @app.before_request
+    def require_login():
+        public_routes = {'login', 'static'}
+        if request.endpoint in public_routes:
+            return None
+        if 'username' not in session:
+            return redirect(url_for('login'))
+        return None
+
+    @app.route('/login', methods=['GET', 'POST'])
+    def login():
+        if request.method == 'POST':
+            username = request.form.get('username', '').strip()
+            user = get_user_by_username(username)
+            if user and user['active']:
+                session['username'] = username
+                flash('Logged in successfully.', 'success')
+                return redirect(url_for('dashboard'))
+            flash('Invalid or inactive account.', 'error')
+        return render_template('login.html', first_run=app.config.get('FIRST_RUN', False))
+
+    @app.route('/logout')
+    def logout():
+        session.clear()
+        return redirect(url_for('login'))
+
+    @app.route('/about')
+    def about():
+        return render_template('about.html')
+
+    @app.route('/')
+    @app.route('/dashboard')
+    def dashboard():
+        metrics = dashboard_metrics()
+        recent = audit_entries(8)
+        stock = list_stock_items()
+        return render_template('dashboard.html', user=get_user_by_username(session['username']), metrics=metrics, recent=recent, stock=stock)
+
+    @app.route('/stock-items', methods=['GET', 'POST'])
+    def stock_items():
+        user = get_user_by_username(session['username'])
+        if request.method == 'POST':
+            try:
+                item_id = create_stock_item(
+                    request.form.get('code', ''),
+                    request.form.get('name', ''),
+                    request.form.get('unit', 'kg'),
+                    request.form.get('quantity', '0'),
+                    request.form.get('category_id', None),
+                    user['id'],
+                    unit_cost=request.form.get('unit_cost', '0'),
+                    item_type=request.form.get('item_type', 'raw_material'),
+                )
+                add_audit(user['id'], 'STOCK ITEM CREATED', 'Stock Items', item_id, f'Created stock item {request.form.get("code")}')
+                flash('Stock item created successfully.', 'success')
+            except ValueError as exc:
+                flash(str(exc), 'error')
+        return render_template('stock_items.html', stock=list_stock_items(), categories=list_categories(), user=user)
+
+    @app.route('/stock-items/<int:item_id>/status', methods=['POST'])
+    def update_stock_item_status(item_id):
+        user = get_user_by_username(session['username'])
+        try:
+            active = int(request.form.get('active', ''))
+            code = set_stock_item_active(item_id, active, user['id'])
+            status = 'active' if active else 'inactive'
+            add_audit(user['id'], 'STOCK ITEM STATUS UPDATED', 'Stock Items', item_id, f'Set {code} to {status}')
+            flash(f'Stock item {code} set to {status}.', 'success')
+        except (TypeError, ValueError) as exc:
+            flash(str(exc), 'error')
+        return redirect(url_for('stock_items'))
+
+    @app.route('/stock-items/edit/<int:item_id>', methods=['GET', 'POST'])
+    def edit_stock_item(item_id):
+        user = get_user_by_username(session['username'])
+        item = get_db_connection().execute('SELECT * FROM stock_items WHERE id = ?', (item_id,)).fetchone()
+        if request.method == 'POST':
+            try:
+                update_stock_item(
+                    item_id,
+                    request.form.get('code', ''),
+                    request.form.get('name', ''),
+                    request.form.get('unit', 'kg'),
+                    request.form.get('quantity', '0'),
+                    request.form.get('category_id', None),
+                    user['id'],
+                    active=request.form.get('active', 'on') == 'on',
+                    unit_cost=request.form.get('unit_cost', '0'),
+                    notes=request.form.get('notes', ''),
+                    item_type=request.form.get('item_type', 'raw_material'),
+                )
+                add_audit(user['id'], 'STOCK ITEM EDITED', 'Stock Items', item_id, f'Updated stock item {request.form.get("code")}')
+                flash('Stock item updated.', 'success')
+            except ValueError as exc:
+                flash(str(exc), 'error')
+        return render_template('stock_item_edit.html', item=item, categories=list_categories(), user=user)
+
+    @app.route('/import-stock', methods=['GET', 'POST'])
+    def import_stock():
+        user = get_user_by_username(session['username'])
+        if request.method == 'POST':
+            csv_file = request.files.get('csv_file')
+            if not csv_file:
+                flash('Please upload a CSV file.', 'error')
+                return render_template('import_stock.html', user=user)
+            try:
+                rows = parse_csv(csv_file.read().decode('utf-8-sig'))
+                valid_rows, errors = validate_import_rows(rows)
+                if errors:
+                    return render_template('import_stock.html', user=user, preview=valid_rows, errors=errors)
+                accepted, rejected = import_stock_items(valid_rows, user['id'])
+                add_audit(user['id'], 'STOCK ITEM IMPORTED', 'Stock Items', 'import', f'Imported {len(accepted)} stock items')
+                flash(f'Import complete: {len(accepted)} accepted, {len(rejected)} rejected.', 'success')
+            except ValueError as exc:
+                flash(str(exc), 'error')
+        return render_template('import_stock.html', user=user)
+
+    @app.route('/categories', methods=['GET', 'POST'])
+    def categories():
+        user = get_user_by_username(session['username'])
+        if request.method == 'POST':
+            try:
+                category_id = create_category(request.form.get('name', ''), request.form.get('description', ''))
+                add_audit(user['id'], 'CATEGORY CREATED', 'Settings', category_id, f'Created category {request.form.get("name")}')
+                flash('Category created.', 'success')
+            except ValueError as exc:
+                flash(str(exc), 'error')
+        conn = get_db_connection()
+        all_categories = conn.execute('SELECT * FROM categories ORDER BY name').fetchall()
+        conn.close()
+        return render_template('categories.html', categories=all_categories, user=user)
+
+    @app.route('/categories/<int:category_id>/edit', methods=['POST'])
+    def edit_category(category_id):
+        user = get_user_by_username(session['username'])
+        try:
+            update_category(category_id, request.form.get('name', ''), request.form.get('description', ''))
+            add_audit(user['id'], 'CATEGORY UPDATED', 'Settings', category_id, 'Updated category')
+            flash('Category updated.', 'success')
+        except ValueError as exc:
+            flash(str(exc), 'error')
+        return redirect(url_for('categories'))
+
+    @app.route('/categories/<int:category_id>/status', methods=['POST'])
+    def category_status(category_id):
+        user = get_user_by_username(session['username'])
+        try:
+            active = int(request.form.get('active', '0'))
+            name = set_category_active(category_id, active)
+            add_audit(user['id'], 'CATEGORY STATUS UPDATED', 'Settings', category_id, f'Updated {name} status')
+            flash('Category status updated.', 'success')
+        except ValueError as exc:
+            flash(str(exc), 'error')
+        return redirect(url_for('categories'))
+
+    @app.route('/manufacturing', methods=['GET', 'POST'])
+    def manufacturing():
+        user = get_user_by_username(session['username'])
+        if request.method == 'POST':
+            output_item_id = request.form.get('output_item_id')
+            ingredients = []
+            for key, value in request.form.items():
+                if key.startswith('ingredient_') and key.endswith('_qty'):
+                    item_id = key.replace('ingredient_', '').replace('_qty', '')
+                    qty = value.strip()
+                    if qty and qty != '0':
+                        ingredients.append({'item_id': int(item_id), 'quantity': qty})
+            try:
+                actual_output = request.form.get('actual_output')
+                result = create_manufacturing_transaction(
+                    output_item_id, ingredients, actual_output, actual_output, user['id'],
+                    request.form.get('notes', ''), confirmation=request.form.get('confirmation') == '1'
+                )
+                add_audit(user['id'], 'MANUFACTURING CREATED', 'Manufacturing', result['transaction_id'], f'Manufactured output assigned to stock item id {output_item_id}')
+                flash('Manufacturing transaction saved successfully.', 'success')
+            except ValueError as exc:
+                flash(str(exc), 'error')
+        stock = list_stock_items()
+        return render_template(
+            'manufacturing.html',
+            stock=stock,
+            output_stock=[item for item in stock if item['item_type'] == 'manufactured_item'],
+            user=user,
+            allow_negative_stock=get_setting('allow_negative_stock', '0') == '1',
+            history=list_manufacturing_history(10),
+            calculator_mode=get_setting('calculator_mode', '0') == '1',
+            require_notes=get_setting('manufacturing_require_notes', '0') == '1',
+            require_confirmation=get_setting('manufacturing_require_confirmation', '0') == '1',
+        )
+
+    @app.route('/portioning', methods=['GET', 'POST'])
+    def portioning():
+        user = get_user_by_username(session['username'])
+        if request.method == 'POST':
+            action = request.form.get('action')
+            try:
+                if action == 'bulk':
+                    result = create_bulk_portioning(
+                        request.form.get('source_item_id'),
+                        request.form.get('destination_item_id'),
+                        request.form.get('quantity_portioned'),
+                        user['id'],
+                        request.form.get('notes', ''), request.form.get('waste_reason', '')
+                    )
+                    add_audit(user['id'], 'PORTIONING CREATED', 'Portioning', result['session_id'], 'Bulk portioning created')
+                    flash('Bulk portioning recorded.', 'success')
+                elif action == 'yield_loss':
+                    result = create_yield_loss_portioning(
+                        request.form.get('source_item_id'),
+                        request.form.get('destination_item_id') or None,
+                        request.form.get('original_quantity'),
+                        request.form.get('usable_quantity'),
+                        request.form.get('original_total_cost'),
+                        user['id'],
+                        request.form.get('notes', ''), request.form.get('waste_reason', '')
+                    )
+                    add_audit(user['id'], 'PORTIONING COMPLETED', 'Portioning', result['session_id'], 'Yield loss transaction recorded')
+                    message = f'Yield loss recorded. Adjusted cost: {result["adjusted_cost_per_unit"]}'
+                    if result.get('yield_warning'):
+                        message += ' Warning: yield is below the configured minimum.'
+                    flash(message, 'success')
+            except ValueError as exc:
+                flash(str(exc), 'error')
+        stock = list_stock_items()
+        return render_template('portioning.html', stock=stock,
+                               portioned_stock=[item for item in stock if item['item_type'] == 'portioned_item'],
+                               recent=list_recent_portioning(10), user=user,
+                               require_waste_reason=get_setting('portioning_require_waste_reason', '0') == '1')
+
+    @app.route('/reports')
+    def reports():
+        user = get_user_by_username(session['username'])
+        values = get_settings()
+        return render_template('reports.html', user=user, manufacturing_history=list_manufacturing_history(20),
+                               recent_portioning=list_recent_portioning(20), report_settings=values)
+
+    @app.route('/reports/stock-items')
+    def stock_item_report_view():
+        user = get_user_by_username(session['username'])
+        filters = {
+            'search': request.args.get('search', '').strip(),
+            'category': request.args.get('category', '').strip(),
+            'item_type': request.args.get('item_type', '').strip(),
+            'unit': request.args.get('unit', '').strip(),
+            'status': request.args.get('status', '').strip(),
+            'sort': request.args.get('sort', 'code'),
+            'direction': request.args.get('direction', 'asc'),
+        }
+        try:
+            page = max(1, int(request.args.get('page', '1')))
+        except ValueError:
+            page = 1
+        per_page = 25
+        rows, totals, total_count = stock_item_report(**filters, page=page, per_page=per_page)
+        pages = max(1, (total_count + per_page - 1) // per_page)
+        return render_template(
+            'stock_item_report.html',
+            user=user,
+            rows=rows,
+            totals=totals,
+            total_count=total_count,
+            page=page,
+            pages=pages,
+            filters=filters,
+            categories=list_categories(),
+            generated_at=datetime.now().strftime('%Y-%m-%d %H:%M'),
+            report_settings=get_settings(),
+        )
+
+    @app.route('/reports/stock-items/export/<export_format>')
+    def export_stock_item_report(export_format):
+        user = get_user_by_username(session['username'])
+        filters = {
+            'search': request.args.get('search', '').strip(),
+            'category': request.args.get('category', '').strip(),
+            'item_type': request.args.get('item_type', '').strip(),
+            'unit': request.args.get('unit', '').strip(),
+            'status': request.args.get('status', '').strip(),
+            'sort': request.args.get('sort', 'code'),
+            'direction': request.args.get('direction', 'asc'),
+        }
+        rows, totals, _ = stock_item_report(**filters, page=1, per_page=1000000)
+        headers = ['Stock Code', 'Stock Name', 'Stock Type', 'Unit', 'Quantity', 'Cost Per Unit', 'Total Cost', 'Category', 'Status', 'Last Updated']
+        data = [[row['code'], row['name'], row['item_type'].replace('_', ' ').title(), row['unit'], row['quantity'], row['unit_cost'], row['total_cost'], row['category_name'] or '', 'Active' if row['active'] else 'Inactive', row['date_modified']] for row in rows]
+        filename = 'stock_item_report'
+        if export_format == 'csv':
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(headers)
+            writer.writerows(data)
+            response = app.response_class(output.getvalue(), mimetype='text/csv')
+            response.headers['Content-Disposition'] = f'attachment; filename={filename}.csv'
+            return response
+        if export_format == 'xlsx':
+            from openpyxl import Workbook
+            output = io.BytesIO()
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = 'Stock Item Report'
+            sheet.append(['Kitchen Factory', 'Stock Item Report'])
+            sheet.append(['Generated', datetime.now().strftime('%Y-%m-%d %H:%M')])
+            sheet.append(['Generated By', user['display_name']])
+            sheet.append([])
+            sheet.append(headers)
+            for row in data:
+                sheet.append(row)
+            sheet.append([])
+            sheet.append(['Total Stock Items', totals['stock_items']])
+            sheet.append(['Total Active Items', totals['active_items']])
+            sheet.append(['Total Inactive Items', totals['inactive_items']])
+            sheet.append(['Total Inventory Value', float(totals['inventory_value'])])
+            workbook.save(output)
+            response = app.response_class(output.getvalue(), mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            response.headers['Content-Disposition'] = f'attachment; filename={filename}.xlsx'
+            return response
+        if export_format == 'pdf':
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import landscape, letter
+            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.lib.units import inch
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+            output = io.BytesIO()
+            document = SimpleDocTemplate(output, pagesize=landscape(letter), rightMargin=0.3 * inch, leftMargin=0.3 * inch)
+            styles = getSampleStyleSheet()
+            body = [Paragraph('Kitchen Factory - Stock Item Report', styles['Title']), Paragraph(f'Generated: {datetime.now():%Y-%m-%d %H:%M} | Generated By: {user["display_name"]}', styles['Normal']), Spacer(1, 0.15 * inch)]
+            pdf_rows = [headers] + [[str(value) for value in row] for row in data]
+            table = Table(pdf_rows, repeatRows=1)
+            table.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#132238')), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white), ('GRID', (0, 0), (-1, -1), 0.25, colors.grey), ('FONTSIZE', (0, 0), (-1, -1), 7), ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f4f6f8')])]))
+            body.append(table)
+            body.append(Spacer(1, 0.15 * inch))
+            body.append(Paragraph(f'Total Stock Items: {totals["stock_items"]} | Active: {totals["active_items"]} | Inactive: {totals["inactive_items"]} | Inventory Value: R{totals["inventory_value"]}', styles['Normal']))
+            document.build(body)
+            response = app.response_class(output.getvalue(), mimetype='application/pdf')
+            response.headers['Content-Disposition'] = f'attachment; filename={filename}.pdf'
+            return response
+        flash('Unsupported stock item report export format.', 'error')
+        return redirect(url_for('stock_item_report_view'))
+
+    @app.route('/audit-log')
+    def audit_log():
+        user = get_user_by_username(session['username'])
+        return render_template('audit_log.html', user=user, entries=audit_entries(50))
+
+    @app.route('/users', methods=['GET', 'POST'])
+    def users():
+        user = get_user_by_username(session['username'])
+        if request.method == 'POST':
+            try:
+                user_id = request.form.get('user_id')
+                if user_id:
+                    update_user(int(user_id), request.form.get('username', ''), request.form.get('display_name', ''),
+                                request.form.get('role', ''), request.form.get('active') == '1')
+                    action = 'USER UPDATED'
+                else:
+                    user_id = create_user(request.form.get('username', ''), request.form.get('display_name', ''),
+                                          request.form.get('role', ''), request.form.get('active') == '1')
+                    action = 'USER CREATED'
+                add_audit(user['id'], action, 'Users', user_id, 'User administration change')
+                flash('User saved.', 'success')
+            except (TypeError, ValueError) as exc:
+                flash(str(exc), 'error')
+            return redirect(url_for('users'))
+        rows = list_users()
+        return render_template('users.html', user=user, users=rows)
+
+    @app.route('/settings', methods=['GET', 'POST'])
+    def settings():
+        user = get_user_by_username(session['username'])
+        if request.method == 'POST':
+            values = get_settings()
+            for key in values:
+                if key in ('allow_negative_stock', 'calculator_mode', 'manufacturing_require_notes',
+                           'manufacturing_require_confirmation', 'manufacturing_auto_cost',
+                           'portioning_require_waste_reason', 'audit_enabled'):
+                    values[key] = '1' if request.form.get(key) == '1' else '0'
+                elif key in request.form:
+                    values[key] = request.form.get(key)
+            try:
+                update_settings(values)
+                add_audit(user['id'], 'SETTING UPDATED', 'Settings', 'all', 'Updated application settings')
+                flash('Settings updated.', 'success')
+            except ValueError as exc:
+                flash(str(exc), 'error')
+        values = get_settings()
+        return render_template(
+            'settings.html',
+            user=user,
+            categories=list_categories(),
+            allow_negative_stock=values.get('allow_negative_stock') == '1',
+            settings=values,
+            setting_sections=settings_by_section(values),
+        )
+
+    @app.route('/export-csv')
+    def export_csv():
+        output = io.StringIO()
+        writer = csv.writer(output)
+        rows = list_stock_items()
+        writer.writerow(['Code', 'Name', 'Unit', 'Quantity', 'Category'])
+        for row in rows:
+            writer.writerow([row['code'], row['name'], row['unit'], row['quantity'], row['category_name']])
+        response = app.response_class(output.getvalue(), mimetype='text/csv')
+        response.headers['Content-Disposition'] = 'attachment; filename=stock_report.csv'
+        return response
+
+    return app
+
+
+app = create_app()
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)

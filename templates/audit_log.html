@@ -1,0 +1,5 @@
+{% extends 'base.html' %}
+{% block title %}Audit Log Report - Kitchen Factory{% endblock %}
+{% block content %}
+<div class="card"><h1>Audit Log Report</h1><table><thead><tr><th>User</th><th>Action</th><th>Module</th><th>Description</th><th>Date</th></tr></thead><tbody>{% for row in entries %}<tr><td>{{ row['user_name'] }}</td><td>{{ row['action'] }}</td><td>{{ row['module'] }}</td><td>{{ row['description'] }}</td><td>{{ row['created_at'] }}</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}

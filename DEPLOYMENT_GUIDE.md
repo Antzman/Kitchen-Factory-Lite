@@ -1,0 +1,210 @@
+# Kitchen Factory 1.0.0 Deployment Guide
+
+This guide describes how to build and distribute Kitchen Factory to Windows
+users who do not have Python, VS Code, or Command Prompt available.
+
+Kitchen Factory is a hospitality kitchen calculator and operational costing
+tool. It is not an ERP system and the deployment package does not add
+accounting, purchasing, suppliers, payroll, general ledger, or POS features.
+
+## Release contents
+
+- `launch.py` starts the local Waitress web server and opens the default browser.
+- `KitchenFactory.spec` defines the PyInstaller executable.
+- `installer/KitchenFactory.iss` defines the Inno Setup installer.
+- `build_windows.ps1` builds the executable and, when Inno Setup is installed,
+  builds `release/KitchenFactorySetup.exe`.
+- `templates/` and `static/` are bundled into the executable.
+- The SQLite database is created at
+  `%LOCALAPPDATA%\Kitchen Factory\kitchen_factory.db` for installed builds.
+
+## Build prerequisites
+
+Build on a Windows machine with:
+
+1. Python 3.11 or newer.
+2. Inno Setup 6, downloaded from the official Inno Setup website.
+3. The Kitchen Factory source folder.
+
+The target user's machine does not need Python or Inno Setup.
+
+## Build steps
+
+Open PowerShell in the project folder and run:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+.\build_windows.ps1
+```
+
+The script:
+
+1. Removes prior `build`, `dist`, and `release` output.
+2. Runs PyInstaller using `KitchenFactory.spec`.
+3. Compiles the Inno Setup script when `ISCC.exe` is available.
+
+If Inno Setup is not installed, the executable is still produced at
+`dist\KitchenFactory.exe`. Install Inno Setup 6 and run:
+
+```powershell
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\KitchenFactory.iss
+```
+
+The installer is created at:
+
+```text
+release\KitchenFactorySetup.exe
+```
+
+## PyInstaller command
+
+The direct equivalent of the executable build is:
+
+```powershell
+pyinstaller --clean --noconfirm KitchenFactory.spec
+```
+
+The build uses a windowless executable, includes Flask templates and static
+assets, and uses Waitress rather than Flask's development server.
+
+## Installer behavior
+
+`KitchenFactorySetup.exe`:
+
+- Installs Kitchen Factory under `Program Files`.
+- Creates a Desktop shortcut.
+- Creates a Start Menu shortcut.
+- Registers Kitchen Factory with Windows installed applications.
+- Provides an uninstall entry.
+- Offers to launch Kitchen Factory after installation.
+
+The application itself runs locally at:
+
+```text
+http://127.0.0.1:5000/login
+```
+
+The browser opens automatically when the application starts. No command
+prompt, Python installation, or Flask configuration is required.
+
+## Database behavior
+
+On first launch, the application:
+
+- Creates `%LOCALAPPDATA%\Kitchen Factory\kitchen_factory.db`.
+- Initializes all tables and migrations.
+- Seeds the default categories.
+- Seeds the default users: `admin`, `manager`, and `user`.
+- Seeds default system settings.
+- Displays a first-run welcome message on the login screen.
+
+Installed builds store the database in the user's writable profile rather than
+under `Program Files`. This avoids requiring administrator permissions for
+normal stock, manufacturing, portioning, reporting, and settings work.
+
+Existing databases remain supported by the normal initialization and migration
+logic. To move an existing database into an installed build, close Kitchen
+Factory and copy the database to:
+
+```text
+%LOCALAPPDATA%\Kitchen Factory\kitchen_factory.db
+```
+
+Make a backup before replacing or migrating a database.
+
+## Distribution
+
+Email or otherwise distribute only the final:
+
+```text
+release\KitchenFactorySetup.exe
+```
+
+The recipient runs the installer, accepts the Windows prompts, and launches
+Kitchen Factory from the Desktop or Start Menu. Do not distribute the source
+folder as the normal user installation method.
+
+For release integrity, publish the SHA-256 hash alongside the installer:
+
+```powershell
+Get-FileHash .\release\KitchenFactorySetup.exe -Algorithm SHA256
+```
+
+## Troubleshooting
+
+### The browser does not open
+
+Open a browser manually and navigate to
+`http://127.0.0.1:5000/login`. Confirm that Kitchen Factory is running from
+Task Manager. Restart the application if the port is already in use.
+
+### Port 5000 is already in use
+
+Close the other local application using port 5000 and restart Kitchen Factory.
+The Version 1.0.0 launcher intentionally uses the documented fixed local URL.
+
+### Windows SmartScreen appears
+
+Unsigned first-party executables can produce a SmartScreen warning. Verify
+the installer hash and choose the Windows option to view more information and
+run it. Code signing should be added for public distribution.
+
+### Database cannot be created
+
+Confirm that the current Windows user can write to
+`%LOCALAPPDATA%\Kitchen Factory`. Do not install the database under
+`Program Files`.
+
+### Existing data is missing
+
+Confirm that the existing database was copied to
+`%LOCALAPPDATA%\Kitchen Factory\kitchen_factory.db` and that Kitchen Factory
+was closed before copying it.
+
+### A build fails
+
+Delete `.venv`, `build`, and `dist`, recreate the virtual environment, install
+`requirements.txt`, and rerun `build_windows.ps1`.
+
+## Deployment checklist
+
+- [ ] `KitchenFactorySetup.exe` is produced.
+- [ ] Installer runs on a clean Windows test machine.
+- [ ] Program Files installation completes.
+- [ ] Desktop shortcut works.
+- [ ] Start Menu shortcut works.
+- [ ] Uninstall entry is present.
+- [ ] Application starts without a console window.
+- [ ] Browser opens automatically.
+- [ ] Login page opens at `/login`.
+- [ ] First-run database is created.
+- [ ] Default users `admin`, `manager`, and `user` can log in.
+- [ ] Stock Item Database works.
+- [ ] Manufacturing System works.
+- [ ] Portioning System works.
+- [ ] Reports work.
+- [ ] Settings work.
+- [ ] About page shows Version 1.0.0, Database Version 1.0, and the build date.
+- [ ] Existing database migration is tested from a backup copy.
+- [ ] Installer is tested without Python or VS Code installed.
+- [ ] Installer hash is recorded for distribution.
+
+## Release process
+
+1. Run the automated tests:
+
+   ```powershell
+   python -m compileall -q .
+   python -m pytest -q
+   ```
+
+2. Run `build_windows.ps1` on a clean release checkout.
+3. Install `release\KitchenFactorySetup.exe` on a clean Windows machine.
+4. Complete the deployment checklist.
+5. Generate and record the SHA-256 hash.
+6. Archive the installer, hash, source revision, and test results.
+7. Distribute the installer to users.
+

@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# VS Code
+.vscode/
+
+# Build output
+build/
+dist/
+release/
+
+# Database files
+*.db
+
+# Log files
+*.log
+
+# Windows
+Thumbs.db
+Desktop.ini

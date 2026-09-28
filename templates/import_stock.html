@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card">
+    <h1>CSV Stock Import</h1>
+    <form method="post" enctype="multipart/form-data" class="grid-form">
+        <label>Upload CSV<input type="file" name="csv_file" accept=".csv" required></label>
+        <button type="submit" class="primary-btn">Validate and Import</button>
+    </form>
+    {% if preview %}
+    <h2>Preview</h2>
+    <table>
+        <thead><tr><th>Code</th><th>Name</th><th>Unit</th><th>Quantity</th><th>Category</th></tr></thead>
+        <tbody>
+            {% for row in preview %}<tr><td>{{ row['code'] }}</td><td>{{ row['name'] }}</td><td>{{ row['unit'] }}</td><td>{{ row['quantity'] }}</td><td>{{ row['category'] }}</td></tr>{% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+    {% if errors %}
+    <div class="errors">
+        {% for error in errors %}<div>{{ error }}</div>{% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

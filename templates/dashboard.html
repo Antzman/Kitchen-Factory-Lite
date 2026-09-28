@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block title %}My Dashboard - Kitchen Factory{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h1>My Dashboard</h1>
+    <span>Welcome {{ user['display_name'] }}</span>
+</div>
+<div class="metrics-grid">
+    <div class="metric-card"><span>Total Stock Items</span><strong>{{ metrics.total_stock_items }}</strong></div>
+    <div class="metric-card"><span>Manufacturing Transactions</span><strong>{{ metrics.manufacturing_transactions }}</strong></div>
+    <div class="metric-card"><span>Portioning Transactions</span><strong>{{ metrics.portioning_transactions }}</strong></div>
+    <div class="metric-card"><span>Recent Activity</span><strong>{{ metrics.recent_activity }}</strong></div>
+</div>
+<div class="two-column">
+    <section class="card">
+        <h2>Recent Activity</h2>
+        <ul class="list">
+            {% for item in recent %}
+            <li><strong>{{ item['action'] }}</strong> — {{ item['description'] }} <span>{{ item['created_at'] }}</span></li>
+            {% endfor %}
+        </ul>
+    </section>
+    <section class="card">
+        <h2>Stock Snapshot</h2>
+        <ul class="list">
+            {% for item in stock[:8] %}
+            <li>{{ item['name'] }} — {{ item['quantity'] }} {{ item['unit'] }}</li>
+            {% endfor %}
+        </ul>
+    </section>
+</div>
+{% endblock %}

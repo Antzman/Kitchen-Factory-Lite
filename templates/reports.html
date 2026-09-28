@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+{% block title %}Kitchen Factory Reports{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>{{ report_settings.get('reporting_company_name', 'Kitchen Factory') }} Reports</h1>
+        <p class="muted">A central hub for stock, production, portioning, and system reports.</p>
+    </div>
+</div>
+
+<div class="report-hub-grid">
+    <section class="card report-hub-card">
+        <h2>Inventory Reports</h2>
+        <ul class="report-link-list">
+            <li><a href="{{ url_for('stock_item_report_view') }}">Stock Item Report</a><span>Stock count and costing reference</span></li>
+            <li><span class="report-unavailable">Low Stock Report</span><span>Coming soon</span></li>
+            <li><span class="report-unavailable">Negative Stock Report</span><span>Coming soon</span></li>
+            <li><span class="report-unavailable">Inventory Value Report</span><span>Coming soon</span></li>
+        </ul>
+    </section>
+    <section class="card report-hub-card">
+        <h2>Manufacturing Reports</h2>
+        <ul class="report-link-list">
+            <li><a href="#manufacturing-history">Manufacturing History</a><span>Recent production transactions</span></li>
+            <li><span class="report-unavailable">Manufacturing Cost Analysis</span><span>Coming soon</span></li>
+            <li><span class="report-unavailable">Ingredient Usage Report</span><span>Coming soon</span></li>
+        </ul>
+    </section>
+    <section class="card report-hub-card">
+        <h2>Portioning Reports</h2>
+        <ul class="report-link-list">
+            <li><a href="#portioning-history">Portioning History</a><span>Recent portioning transactions</span></li>
+            <li><span class="report-unavailable">Yield Loss Report</span><span>Coming soon</span></li>
+            <li><span class="report-unavailable">Waste Report</span><span>Coming soon</span></li>
+        </ul>
+    </section>
+    <section class="card report-hub-card">
+        <h2>System Reports</h2>
+        <ul class="report-link-list">
+            <li><a href="{{ url_for('audit_log') }}">User Activity Report</a><span>Recorded user actions</span></li>
+            <li><a href="{{ url_for('audit_log') }}">Audit Log Report</a><span>Application audit history</span></li>
+            <li><a href="{{ url_for('audit_log') }}">Settings Change Report</a><span>Configuration changes in the audit history</span></li>
+        </ul>
+    </section>
+</div>
+
+<section class="card" id="manufacturing-history">
+    <h2>Manufacturing History</h2>
+    <table><thead><tr><th>Date</th><th>User</th><th>Output</th><th>Actual</th><th>Yield</th><th>Total Cost</th></tr></thead><tbody>{% for row in manufacturing_history %}<tr><td>{{ row['manufacturing_date'] }}</td><td>{{ row['user_name'] }}</td><td>{{ row['output_name'] }}</td><td>{{ row['actual_output'] }}</td><td>{{ row['yield_percentage'] }}</td><td>{{ row['total_cost'] }}</td></tr>{% else %}<tr><td colspan="6" class="muted">No manufacturing transactions yet.</td></tr>{% endfor %}</tbody></table>
+</section>
+<section class="card" id="portioning-history">
+    <h2>Portioning History</h2>
+    <table><thead><tr><th>Date</th><th>User</th><th>Source</th><th>Destination</th><th>Qty</th><th>Waste</th><th>Yield %</th></tr></thead><tbody>{% for row in recent_portioning %}<tr><td>{{ row['transaction_date'] }}</td><td>{{ row['user_name'] }}</td><td>{{ row['source_name'] }}</td><td>{{ row['destination_name'] }}</td><td>{{ row['quantity_portioned'] }}</td><td>{{ row['waste_quantity'] }}</td><td>{{ row['yield_percentage'] }}</td></tr>{% else %}<tr><td colspan="7" class="muted">No portioning transactions yet.</td></tr>{% endfor %}</tbody></table>
+</section>
+{% endblock %}

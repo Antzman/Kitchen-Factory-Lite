@@ -1,0 +1,86 @@
+{% extends 'base.html' %}
+{% block title %}Stock Item Database - Kitchen Factory{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h1>Stock Item Database</h1>
+    <a class="primary-btn" href="{{ url_for('import_stock') }}">Import CSV</a>
+</div>
+<div class="card">
+    <h2>Create Stock Item</h2>
+    <form method="post" class="grid-form">
+        <label>Code<input type="text" name="code" required></label>
+        <label>Name<input type="text" name="name" required></label>
+        <label>Stock Item Type<select name="item_type" required>
+            <option value="raw_material">Raw Material</option>
+            <option value="manufactured_item">Manufactured Item</option>
+            <option value="portioned_item">Portioned Item</option>
+        </select></label>
+        <label>Unit<select name="unit"><option value="kg">kg</option><option value="L">L</option><option value="each">each</option></select></label>
+        <label>Quantity<input type="number" step="0.001" name="quantity" value="0"></label>
+        <label>Cost per Unit<input type="number" step="0.01" min="0" name="unit_cost" value="0.00"></label>
+        <label>Category<select name="category_id">{% for category in categories %}<option value="{{ category['id'] }}">{{ category['name'] }}</option>{% endfor %}</select></label>
+        <button type="submit" class="primary-btn">Save</button>
+    </form>
+</div>
+<div class="card">
+    <h2>Stock Inventory</h2>
+    <p class="muted">Click a column heading to sort. Quantity is not sortable.</p>
+    <table id="stock-inventory">
+        <thead><tr>
+            <th><button type="button" class="sort-button" data-sort-key="code">Code <span aria-hidden="true">↕</span></button></th>
+            <th><button type="button" class="sort-button" data-sort-key="name">Name <span aria-hidden="true">↕</span></button></th>
+            <th><button type="button" class="sort-button" data-sort-key="type">Type <span aria-hidden="true">↕</span></button></th>
+            <th><button type="button" class="sort-button" data-sort-key="unit">Unit <span aria-hidden="true">↕</span></button></th>
+            <th>Qty</th>
+            <th>Cost</th>
+            <th><button type="button" class="sort-button" data-sort-key="category">Category <span aria-hidden="true">↕</span></button></th>
+            <th>Status</th><th>Actions</th>
+        </tr></thead>
+        <tbody>
+            {% for item in stock %}
+            <tr class="{% if not item['active'] %}inactive-row{% endif %}" data-code="{{ item['code']|lower }}" data-name="{{ item['name']|lower }}" data-type="{{ item['item_type']|lower }}" data-unit="{{ item['unit']|lower }}" data-category="{{ (item['category_name'] or '')|lower }}">
+                <td>{{ item['code'] }}</td>
+                <td>{{ item['name'] }}</td>
+                <td>{{ item['item_type'].replace('_', ' ').title() }}</td>
+                <td>{{ item['unit'] }}</td>
+                <td>{{ item['quantity'] }}</td>
+                <td>{{ '%.2f'|format(item['total_cost']) }}</td>
+                <td>{{ item['category_name'] }}</td>
+                <td>
+                    <form method="post" action="{{ url_for('update_stock_item_status', item_id=item['id']) }}">
+                        <select name="active" class="status-select" aria-label="Status for {{ item['code'] }}" onchange="this.form.submit()">
+                            <option value="1" {% if item['active'] %}selected{% endif %}>Active</option>
+                            <option value="0" {% if not item['active'] %}selected{% endif %}>Inactive</option>
+                        </select>
+                    </form>
+                </td>
+                <td><a href="{{ url_for('edit_stock_item', item_id=item['id']) }}">Edit</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<script>
+    document.querySelectorAll('.sort-button').forEach(function (button) {
+        button.addEventListener('click', function () {
+            var table = document.getElementById('stock-inventory');
+            var body = table.querySelector('tbody');
+            var rows = Array.from(body.querySelectorAll('tr'));
+            var key = button.dataset.sortKey;
+            var ascending = button.dataset.direction !== 'asc';
+            rows.sort(function (left, right) {
+                var comparison = left.dataset[key].localeCompare(right.dataset[key], undefined, { numeric: true, sensitivity: 'base' });
+                return ascending ? comparison : -comparison;
+            });
+            rows.forEach(function (row) { body.appendChild(row); });
+            document.querySelectorAll('.sort-button').forEach(function (other) {
+                other.dataset.direction = '';
+                other.querySelector('span').textContent = '↕';
+            });
+            button.dataset.direction = ascending ? 'asc' : 'desc';
+            button.querySelector('span').textContent = ascending ? '↑' : '↓';
+        });
+    });
+
+</script>
+{% endblock %}

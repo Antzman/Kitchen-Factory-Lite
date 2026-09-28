@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Kitchen Factory{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body class="{% block body_class %}{% endblock %} mode-{{ settings.get('appearance_mode', 'light') if settings is defined else 'light' }} scheme-{{ settings.get('appearance_colour_scheme', 'kitchen_green') if settings is defined else 'kitchen_green' }}">
+    <div class="app-shell">
+        <aside class="sidebar">
+            <a class="brand" href="{{ url_for('about') }}">Kitchen Factory</a>
+            {% if session.get('username') %}
+            <nav>
+                <a class="{% if request.endpoint == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">My Dashboard</a>
+                <a class="{% if request.endpoint in ['stock_items', 'edit_stock_item', 'import_stock'] %}active{% endif %}" href="{{ url_for('stock_items') }}">Stock Item Database</a>
+                <a class="{% if request.endpoint == 'manufacturing' %}active{% endif %}" href="{{ url_for('manufacturing') }}">Manufacturing System</a>
+                <a class="{% if request.endpoint == 'portioning' %}active{% endif %}" href="{{ url_for('portioning') }}">Portioning System</a>
+                <a class="{% if request.endpoint in ['reports', 'stock_item_report_view', 'audit_log'] %}active{% endif %}" href="{{ url_for('reports') }}">Reports</a>
+                <a class="{% if request.endpoint in ['settings', 'users', 'categories'] %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a>
+                <a class="{% if request.endpoint == 'about' %}active{% endif %}" href="{{ url_for('about') }}">About</a>
+                <a href="{{ url_for('logout') }}">Logout</a>
+            </nav>
+            {% endif %}
+        </aside>
+        <main class="main-panel">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+            <div class="flash-container">
+                {% for category, message in messages %}
+                    <div class="flash {{ category }}">{{ message }}</div>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% endwith %}
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+</body>
+</html>

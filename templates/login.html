@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}Sign in - Kitchen Factory{% endblock %}
+{% block body_class %}login-page{% endblock %}
+{% block content %}
+<div class="login-layout">
+    <div class="login-branding">
+        <img src="{{ url_for('static', filename='images/login-hero.png') }}" alt="Kitchen Factory hospitality kitchen calculator">
+    </div>
+    <section class="login-card" aria-labelledby="login-heading">
+        {% if first_run %}
+        <div class="login-welcome" role="status">
+            <strong>Welcome to Kitchen Factory</strong>
+            <span>Database created successfully.</span>
+            <span>Default users: admin, manager, user</span>
+        </div>
+        {% endif %}
+        <div class="login-card-heading">
+            <span class="login-eyebrow">Kitchen Factory</span>
+            <h1 id="login-heading">Welcome back</h1>
+            <p>Sign in to continue to your kitchen workspace.</p>
+        </div>
+        <form method="post" class="login-form">
+            <label for="username">Username
+                <input id="username" type="text" name="username" autocomplete="username" required autofocus>
+            </label>
+            <button type="submit" class="primary-btn">Sign in</button>
+        </form>
+        <p class="login-help">Use your Kitchen Factory username to access the application.</p>
+    </section>
+</div>
+{% endblock %}

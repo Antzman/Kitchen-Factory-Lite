@@ -1,0 +1,5 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card"><h1>Users</h1><form method="post" class="grid-form"><label>Username<input name="username" required></label><label>Display name<input name="display_name" required></label><label>Role<input name="role" value="User" required></label><label class="setting-toggle"><input type="checkbox" name="active" value="1" checked> Active</label><button class="primary-btn">Add user</button></form></div>
+<div class="card"><table><thead><tr><th>Username</th><th>Display Name</th><th>Role</th><th>Active</th><th>Edit</th></tr></thead><tbody>{% for row in users %}<tr><form method="post"><input type="hidden" name="user_id" value="{{ row['id'] }}"><td><input name="username" value="{{ row['username'] }}"></td><td><input name="display_name" value="{{ row['display_name'] }}"></td><td><input name="role" value="{{ row['role'] }}"></td><td><input type="checkbox" name="active" value="1" {% if row['active'] %}checked{% endif %}></td><td><button class="secondary-btn">Save</button></td></form></tr>{% endfor %}</tbody></table></div>
+{% endblock %}

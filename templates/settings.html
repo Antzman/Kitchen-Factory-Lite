@@ -1,0 +1,54 @@
+{% extends 'base.html' %}
+{% block title %}Settings - Kitchen Factory{% endblock %}
+{% block content %}
+<div class="page-header"><div><h1>Settings</h1><p class="muted">Choose how Kitchen Factory works for your kitchen. Each option includes a short explanation to help you decide.</p></div></div>
+<form method="post" class="settings-form">
+{% for section, entries in setting_sections.items() %}
+<section class="settings-group">
+    <div class="settings-group-heading">
+        <h2>{{ section }}</h2>
+        <p class="muted">
+        {% if section == 'General' %}Application-wide preferences and reporting history.{% endif %}
+        {% if section == 'Inventory' %}Rules that control stock quantities and shortages.{% endif %}
+        {% if section == 'Manufacturing' %}Rules for producing stock items from ingredients.{% endif %}
+        {% if section == 'Portioning' %}Rules for portioning stock and recording waste.{% endif %}
+        {% if section == 'Appearance' %}Choose a comfortable display style for the application.{% endif %}
+        </p>
+    </div>
+    <div class="settings-cards">
+    {% for entry in entries %}{% set definition = entry.definition %}
+    <article class="setting-card">
+        <div class="setting-card-copy">
+            <h3>{{ definition.label }}</h3>
+            <p>{{ definition.description or 'Choose the option that best matches your kitchen process.' }}</p>
+        </div>
+        <div class="setting-control">
+        {% if definition.kind == 'bool' %}
+            <label class="setting-toggle"><input type="checkbox" name="{{ definition.key }}" value="1" {% if settings[definition.key] == '1' %}checked{% endif %}><span>{% if settings[definition.key] == '1' %}Enabled{% else %}Disabled{% endif %}</span></label>
+        {% elif definition.key == 'appearance_mode' %}
+            <select name="{{ definition.key }}"><option value="light" {% if settings[definition.key] == 'light' %}selected{% endif %}>Light Mode</option><option value="dark" {% if settings[definition.key] == 'dark' %}selected{% endif %}>Dark Mode</option></select>
+        {% elif definition.key == 'appearance_colour_scheme' %}
+            <select name="{{ definition.key }}"><option value="kitchen_green" {% if settings[definition.key] == 'kitchen_green' %}selected{% endif %}>Kitchen Green</option><option value="kitchen_blue" {% if settings[definition.key] == 'kitchen_blue' %}selected{% endif %}>Kitchen Blue</option></select>
+        {% elif definition.key == 'reporting_default_export' %}
+            <select name="{{ definition.key }}">{% for n in ['csv','xlsx','pdf'] %}<option value="{{ n }}" {% if settings[definition.key] == n %}selected{% endif %}>{{ n|upper }}</option>{% endfor %}</select>
+        {% elif definition.key == 'audit_level' %}
+            <select name="{{ definition.key }}">{% for n in ['minimal','standard','detailed'] %}<option value="{{ n }}" {% if settings[definition.key] == n %}selected{% endif %}>{{ n|title }}</option>{% endfor %}</select>
+        {% elif definition.key == 'reporting_default_rows' %}
+            <select name="{{ definition.key }}">{% for n in [10,25,50,100] %}<option value="{{ n }}" {% if settings[definition.key] == n|string %}selected{% endif %}>{{ n }} rows</option>{% endfor %}</select>
+        {% else %}
+            <input name="{{ definition.key }}" value="{{ settings[definition.key] }}">
+        {% endif %}
+        </div>
+    </article>
+    {% endfor %}
+    </div>
+</section>
+{% endfor %}
+<div class="settings-group settings-extra">
+    <div class="settings-group-heading"><h2>Users</h2><p class="muted">Manage the people who can use Kitchen Factory and keep access up to date.</p></div>
+    <article class="setting-card"><div class="setting-card-copy"><h3>User access</h3><p>Add users, update their details, or deactivate access without removing their history.</p></div><div class="setting-control"><a class="secondary-btn" href="{{ url_for('users') }}">Manage Users</a></div></article>
+</div>
+<button type="submit" class="primary-btn settings-save">Save Settings</button>
+</form>
+<div class="card"><h2>Stock Categories</h2><p class="muted">Keep the category list tidy so stock items are easy to find.</p><a class="secondary-btn" href="{{ url_for('categories') }}">Manage categories</a></div>
+{% endblock %}
