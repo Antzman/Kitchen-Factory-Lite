@@ -37,6 +37,23 @@ from services import (
     update_user,
     update_category,
     set_category_active,
+    list_menu_categories,
+    create_menu_category,
+    update_menu_category,
+    set_menu_category_active,
+    delete_menu_category,
+    list_menu_items,
+    get_menu_item,
+    get_menu_item_recipe,
+    create_menu_item,
+    update_menu_item,
+    delete_menu_item,
+    save_menu_recipe_line,
+    delete_menu_recipe_line,
+    menu_item_audit_entries,
+    parse_menu_item_csv,
+    validate_menu_item_import_rows,
+    import_menu_items,
 )
 from settings import settings_by_section
 
@@ -207,6 +224,196 @@ def create_app():
         except ValueError as exc:
             flash(str(exc), 'error')
         return redirect(url_for('categories'))
+
+    @app.route('/menuitems')
+    @app.route('/menu-items')
+    def menu_items():
+        user = get_user_by_username(session['username'])
+        search = request.args.get('search', '').strip()
+        return render_template(
+            'menu_items.html', user=user, menu_items=list_menu_items(search), search=search
+        )
+
+    @app.route('/menu-items/export.csv')
+    def export_menu_items():
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            'Code', 'Name', 'Type', 'Category', 'Cost Price', 'Selling Price',
+            'Gross Profit', 'Gross Profit %', 'Active',
+        ])
+        for item in list_menu_items(request.args.get('search', '').strip()):
+            writer.writerow([
+                item['code'], item['name'], item['item_type'], item['category_name'],
+                item['cost_price'], item['selling_price'], item['gross_profit'],
+                item['gross_profit_percentage'], 'Yes' if item['active'] else 'No',
+            ])
+        response = app.response_class(output.getvalue(), mimetype='text/csv')
+        response.headers['Content-Disposition'] = 'attachment; filename=menu_items.csv'
+        return response
+
+    @app.route('/menu-items/import-template.csv')
+    def menu_items_import_template():
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['Code', 'Name', 'Type', 'Category', 'Selling Price', 'Active'])
+        response = app.response_class(output.getvalue(), mimetype='text/csv')
+        response.headers['Content-Disposition'] = 'attachment; filename=menu_items_import_template.csv'
+        return response
+
+    @app.route('/menu-items/import', methods=['GET', 'POST'])
+    def import_menu_items_view():
+        user = get_user_by_username(session['username'])
+        if request.method == 'POST':
+            csv_file = request.files.get('csv_file')
+            if not csv_file or not csv_file.filename:
+                flash('Please select a CSV file to import.', 'error')
+                return render_template('import_menu_items.html', user=user)
+            try:
+                rows = parse_menu_item_csv(csv_file.read().decode('utf-8-sig'))
+                valid_rows, errors = validate_menu_item_import_rows(rows)
+                if errors:
+                    return render_template(
+                        'import_menu_items.html', user=user,
+                        preview=valid_rows, errors=errors,
+                    )
+                imported_ids = import_menu_items(rows, user['id'])
+                flash(f'Imported {len(imported_ids)} menu items successfully.', 'success')
+                return redirect(url_for('menu_items'))
+            except (UnicodeDecodeError, ValueError) as exc:
+                flash(str(exc), 'error')
+        return render_template('import_menu_items.html', user=user)
+
+    @app.route('/menu-items/new', methods=['GET', 'POST'])
+    def create_menu_item_view():
+        user = get_user_by_username(session['username'])
+        categories = list_menu_categories(include_inactive=False)
+        if request.method == 'POST':
+            try:
+                item_id = create_menu_item(
+                    request.form.get('code', ''), request.form.get('name', ''),
+                    request.form.get('item_type', ''), request.form.get('category_id', ''),
+                    request.form.get('selling_price', ''), user['id'],
+                )
+                flash('Menu item created. Add its recipe to calculate cost.', 'success')
+                return redirect(url_for('menu_item_detail', menu_item_id=item_id, tab='recipe'))
+            except ValueError as exc:
+                flash(str(exc), 'error')
+        return render_template(
+            'menu_item_detail.html', user=user, item=None, categories=categories,
+            recipe=[], audit_entries=[], stock_items=list_stock_items(), tab='general',
+        )
+
+    @app.route('/menu-items/<int:menu_item_id>', methods=['GET', 'POST'])
+    def menu_item_detail(menu_item_id):
+        user = get_user_by_username(session['username'])
+        item = get_menu_item(menu_item_id)
+        if item is None:
+            flash('Menu item not found.', 'error')
+            return redirect(url_for('menu_items'))
+        if request.method == 'POST':
+            try:
+                update_menu_item(
+                    menu_item_id, request.form.get('code', ''), request.form.get('name', ''),
+                    request.form.get('item_type', ''), request.form.get('category_id', ''),
+                    request.form.get('selling_price', ''), request.form.get('active') == '1',
+                    user['id'],
+                )
+                flash('Menu item updated.', 'success')
+                return redirect(url_for('menu_item_detail', menu_item_id=menu_item_id))
+            except ValueError as exc:
+                flash(str(exc), 'error')
+        categories = list_menu_categories()
+        recipe = get_menu_item_recipe(menu_item_id)
+        tab = request.args.get('tab', 'general')
+        if tab not in {'general', 'recipe', 'audit'}:
+            tab = 'general'
+        return render_template(
+            'menu_item_detail.html', user=user, item=item, categories=categories,
+            recipe=recipe, audit_entries=menu_item_audit_entries(menu_item_id),
+            stock_items=list_stock_items(), tab=tab,
+            read_only=request.args.get('mode') == 'view',
+        )
+
+    @app.route('/menu-items/<int:menu_item_id>/delete', methods=['POST'])
+    def delete_menu_item_view(menu_item_id):
+        user = get_user_by_username(session['username'])
+        try:
+            delete_menu_item(menu_item_id, user['id'])
+            flash('Menu item deleted.', 'success')
+        except ValueError as exc:
+            flash(str(exc), 'error')
+        return redirect(url_for('menu_items'))
+
+    @app.route('/menu-items/<int:menu_item_id>/recipe', methods=['POST'])
+    def save_menu_item_recipe(menu_item_id):
+        user = get_user_by_username(session['username'])
+        try:
+            line_id = request.form.get('line_id', '').strip()
+            save_menu_recipe_line(
+                menu_item_id, request.form.get('item_type', ''),
+                request.form.get('stock_item_id', ''), request.form.get('quantity', ''),
+                user['id'], int(line_id) if line_id else None,
+            )
+            flash('Recipe line saved.', 'success')
+        except (TypeError, ValueError) as exc:
+            flash(str(exc), 'error')
+        return redirect(url_for('menu_item_detail', menu_item_id=menu_item_id, tab='recipe'))
+
+    @app.route('/menu-items/<int:menu_item_id>/recipe/<int:line_id>/delete', methods=['POST'])
+    def remove_menu_item_recipe_line(menu_item_id, line_id):
+        user = get_user_by_username(session['username'])
+        try:
+            delete_menu_recipe_line(menu_item_id, line_id, user['id'])
+            flash('Recipe line deleted.', 'success')
+        except ValueError as exc:
+            flash(str(exc), 'error')
+        return redirect(url_for('menu_item_detail', menu_item_id=menu_item_id, tab='recipe'))
+
+    @app.route('/settings/menu-categories', methods=['GET', 'POST'])
+    def menu_categories():
+        user = get_user_by_username(session['username'])
+        if request.method == 'POST':
+            try:
+                create_menu_category(request.form.get('name', ''), user['id'])
+                flash('Menu category created.', 'success')
+            except ValueError as exc:
+                flash(str(exc), 'error')
+            return redirect(url_for('menu_categories'))
+        return render_template(
+            'menu_categories.html', user=user,
+            categories=list_menu_categories(),
+        )
+
+    @app.route('/settings/menu-categories/<int:category_id>/edit', methods=['POST'])
+    def edit_menu_category(category_id):
+        user = get_user_by_username(session['username'])
+        try:
+            update_menu_category(category_id, request.form.get('name', ''), user['id'])
+            flash('Menu category updated.', 'success')
+        except ValueError as exc:
+            flash(str(exc), 'error')
+        return redirect(url_for('menu_categories'))
+
+    @app.route('/settings/menu-categories/<int:category_id>/status', methods=['POST'])
+    def menu_category_status(category_id):
+        user = get_user_by_username(session['username'])
+        try:
+            active = int(request.form.get('active', '0'))
+            set_menu_category_active(category_id, active, user['id'])
+            flash('Menu category status updated.', 'success')
+        except (TypeError, ValueError) as exc:
+            flash(str(exc), 'error')
+        return redirect(url_for('menu_categories'))
+
+    @app.route('/settings/menu-categories/<int:category_id>/delete', methods=['POST'])
+    def remove_menu_category(category_id):
+        try:
+            delete_menu_category(category_id)
+            flash('Menu category deleted.', 'success')
+        except ValueError as exc:
+            flash(str(exc), 'error')
+        return redirect(url_for('menu_categories'))
 
     @app.route('/manufacturing', methods=['GET', 'POST'])
     def manufacturing():
@@ -461,7 +668,13 @@ def create_app():
     return app
 
 
+import os
+
 app = create_app()
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(
+        debug=False,
+        host='0.0.0.0',
+        port=int(os.environ.get('PORT', 5000))
+    )
