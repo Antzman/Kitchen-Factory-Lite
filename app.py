@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 from datetime import datetime
 from decimal import Decimal
 
@@ -152,7 +153,6 @@ def create_app():
                     item_id,
                     request.form.get('code', ''),
                     request.form.get('name', ''),
-                    request.form.get('unit', 'kg'),
                     request.form.get('quantity', '0'),
                     request.form.get('category_id', None),
                     user['id'],
