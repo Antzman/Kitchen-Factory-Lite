@@ -103,7 +103,8 @@ On first launch, the application:
 
 Installed builds store the database in the user's writable profile rather than
 under `Program Files`. This avoids requiring administrator permissions for
-normal stock, manufacturing, portioning, reporting, and settings work.
+normal stock, manufacturing, portioning, menu item, reporting, and settings
+work.
 
 Existing databases remain supported by the normal initialization and migration
 logic. To move an existing database into an installed build, close Kitchen
@@ -114,6 +115,26 @@ Factory and copy the database to:
 ```
 
 Make a backup before replacing or migrating a database.
+
+## Menu Items
+
+The Menu Items module maintains saleable products, separate menu categories,
+selling prices, recipe costs, active status, and per-item audit history.
+First-run initialization creates the menu categories `Food` and `Beverages`.
+Recipes link to raw, manufactured, or portioned stock items and calculate
+their cost from the linked inventory items' current unit costs.
+
+Menu item data can be imported from a spreadsheet saved as a UTF-8 CSV using
+the Menu Items **Import CSV** action. The required columns are `Code`, `Name`,
+`Type`, `Category`, and `Selling Price`; `Active` is optional and defaults to
+Yes. Valid types are `Ordinary Type` and `Prep Screen Item`. Categories must
+already exist and be active. The import template can be downloaded from the
+import screen. Recipe lines are added separately after importing menu items.
+
+Inventory sale and refund processing is available as a transactional service
+foundation for future Sales/POS integration. It records stock movements and
+uses the original sale's recipe snapshot when processing refunds. This release
+does not include a Sales or POS screen.
 
 ## Distribution
 
@@ -185,6 +206,9 @@ Delete `.venv`, `build`, and `dist`, recreate the virtual environment, install
 - [ ] Stock Item Database works.
 - [ ] Manufacturing System works.
 - [ ] Portioning System works.
+- [ ] Menu Items can be created, edited, searched, viewed, and exported.
+- [ ] Menu categories are managed separately from stock categories.
+- [ ] Recipe costs and menu item audit history are displayed.
 - [ ] Reports work.
 - [ ] Settings work.
 - [ ] About page shows Version 1.0.0, Database Version 1.0, and the build date.
@@ -207,4 +231,3 @@ Delete `.venv`, `build`, and `dist`, recreate the virtual environment, install
 5. Generate and record the SHA-256 hash.
 6. Archive the installer, hash, source revision, and test results.
 7. Distribute the installer to users.
-

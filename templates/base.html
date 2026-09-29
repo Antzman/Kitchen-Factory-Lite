@@ -16,8 +16,9 @@
                 <a class="{% if request.endpoint in ['stock_items', 'edit_stock_item', 'import_stock'] %}active{% endif %}" href="{{ url_for('stock_items') }}">Stock Item Database</a>
                 <a class="{% if request.endpoint == 'manufacturing' %}active{% endif %}" href="{{ url_for('manufacturing') }}">Manufacturing System</a>
                 <a class="{% if request.endpoint == 'portioning' %}active{% endif %}" href="{{ url_for('portioning') }}">Portioning System</a>
+                <a class="{% if request.endpoint in ['menu_items', 'export_menu_items', 'menu_items_import_template', 'import_menu_items_view', 'create_menu_item_view', 'menu_item_detail', 'delete_menu_item_view', 'save_menu_item_recipe', 'remove_menu_item_recipe_line'] %}active{% endif %}" href="{{ url_for('menu_items') }}">Menu Items</a>
                 <a class="{% if request.endpoint in ['reports', 'stock_item_report_view', 'audit_log'] %}active{% endif %}" href="{{ url_for('reports') }}">Reports</a>
-                <a class="{% if request.endpoint in ['settings', 'users', 'categories'] %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a>
+                <a class="{% if request.endpoint in ['settings', 'users', 'categories', 'menu_categories', 'edit_menu_category', 'menu_category_status', 'remove_menu_category'] %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a>
                 <a class="{% if request.endpoint == 'about' %}active{% endif %}" href="{{ url_for('about') }}">About</a>
                 <a href="{{ url_for('logout') }}">Logout</a>
             </nav>

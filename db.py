@@ -73,6 +73,114 @@ def init_db():
                 FOREIGN KEY(category_id) REFERENCES categories(id)
             );
 
+            CREATE TABLE IF NOT EXISTS menu_categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                created_by INTEGER,
+                modified_at TEXT NOT NULL,
+                modified_by INTEGER,
+                FOREIGN KEY(created_by) REFERENCES users(id),
+                FOREIGN KEY(modified_by) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS menu_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                name TEXT NOT NULL,
+                item_type TEXT NOT NULL CHECK(item_type IN ('Ordinary Menu Item','Prep Screen Item')),
+                category_id INTEGER NOT NULL,
+                selling_price TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                date_created TEXT NOT NULL,
+                date_modified TEXT NOT NULL,
+                created_by INTEGER,
+                modified_by INTEGER,
+                FOREIGN KEY(category_id) REFERENCES menu_categories(id),
+                FOREIGN KEY(created_by) REFERENCES users(id),
+                FOREIGN KEY(modified_by) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS menu_item_recipe_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                menu_item_id INTEGER NOT NULL,
+                item_type TEXT NOT NULL CHECK(item_type IN ('Stock Item','Manufactured Item','Portioned Item')),
+                stock_item_id INTEGER NOT NULL,
+                quantity TEXT NOT NULL,
+                unit_cost TEXT NOT NULL,
+                total_cost TEXT NOT NULL,
+                FOREIGN KEY(menu_item_id) REFERENCES menu_items(id) ON DELETE CASCADE,
+                FOREIGN KEY(stock_item_id) REFERENCES stock_items(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_menu_recipe_menu_item
+                ON menu_item_recipe_lines(menu_item_id, id);
+
+            CREATE TABLE IF NOT EXISTS menu_item_modifier_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                menu_item_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                required INTEGER NOT NULL DEFAULT 0,
+                minimum_selections INTEGER NOT NULL DEFAULT 0,
+                maximum_selections INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY(menu_item_id) REFERENCES menu_items(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS menu_item_modifiers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                modifier_group_id INTEGER NOT NULL,
+                modifier_menu_item_id INTEGER NOT NULL,
+                price_delta TEXT NOT NULL DEFAULT '0',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY(modifier_group_id) REFERENCES menu_item_modifier_groups(id) ON DELETE CASCADE,
+                FOREIGN KEY(modifier_menu_item_id) REFERENCES menu_items(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS menu_item_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                menu_item_id INTEGER,
+                record_code TEXT NOT NULL,
+                record_name TEXT NOT NULL,
+                user_id INTEGER,
+                action TEXT NOT NULL,
+                module TEXT NOT NULL DEFAULT 'Menu Items',
+                old_value TEXT,
+                new_value TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS menu_item_inventory_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                menu_item_id INTEGER,
+                transaction_type TEXT NOT NULL CHECK(transaction_type IN ('sale','refund')),
+                quantity TEXT NOT NULL,
+                external_reference TEXT,
+                original_transaction_id INTEGER,
+                user_id INTEGER,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(menu_item_id) REFERENCES menu_items(id) ON DELETE SET NULL,
+                FOREIGN KEY(original_transaction_id) REFERENCES menu_item_inventory_transactions(id),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS menu_item_inventory_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transaction_id INTEGER NOT NULL,
+                stock_item_id INTEGER,
+                item_code TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                quantity TEXT NOT NULL,
+                unit_cost TEXT NOT NULL,
+                total_cost TEXT NOT NULL,
+                FOREIGN KEY(transaction_id) REFERENCES menu_item_inventory_transactions(id) ON DELETE CASCADE,
+                FOREIGN KEY(stock_item_id) REFERENCES stock_items(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS manufacturing_transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 output_item_id INTEGER NOT NULL,
@@ -248,6 +356,20 @@ def init_db():
 def seed_data():
     conn = get_db_connection()
     try:
+        if not conn.execute(
+            "SELECT 1 FROM system_settings WHERE key = 'menu_categories_seeded'"
+        ).fetchone():
+            now = datetime.utcnow().isoformat(timespec='seconds')
+            for name in ('Food', 'Beverages'):
+                conn.execute(
+                    """INSERT OR IGNORE INTO menu_categories
+                       (name, active, created_at, modified_at) VALUES (?, 1, ?, ?)""",
+                    (name, now, now),
+                )
+            conn.execute(
+                "INSERT INTO system_settings(key, value) VALUES ('menu_categories_seeded', '1')"
+            )
+
         default_categories = [
             'Meat', 'Poultry', 'Seafood', 'Dairy', 'Cheese', 'Bakery', 'Bread', 'Pasta',
             'Rice & Grains', 'Vegetables', 'Fruit', 'Herbs', 'Spices', 'Sauces', 'Condiments',

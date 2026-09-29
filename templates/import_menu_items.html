@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block title %}Import Menu Items - Kitchen Factory{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Import Menu Items</h1>
+        <p class="muted">Add menu items from a spreadsheet saved as a UTF-8 CSV file.</p>
+    </div>
+    <a class="secondary-btn" href="{{ url_for('menu_items') }}">Back to Menu Items</a>
+</div>
+<section class="card">
+    <h2>Spreadsheet Format</h2>
+    <p>Include these column headings: <strong>Code, Name, Type, Category, Selling Price</strong>. The optional <strong>Active</strong> column accepts Yes or No and defaults to Yes when blank.</p>
+    <p>Type must be <strong>Ordinary Type</strong> or <strong>Prep Screen Item</strong>. Category names must already exist and be active under Settings → Menu Categories. Existing item codes and duplicate codes in the file are not imported. Recipe lines are managed separately on each menu item's Recipe tab.</p>
+    <p><a class="secondary-btn" href="{{ url_for('menu_items_import_template') }}">Download CSV Template</a></p>
+    <form method="post" enctype="multipart/form-data" class="grid-form">
+        <label>Menu Item CSV<input type="file" name="csv_file" accept=".csv,text/csv" required></label>
+        <button type="submit" class="secondary-btn">Validate and Import</button>
+    </form>
+</section>
+{% if errors %}
+<section class="card">
+    <h2>Import Errors</h2>
+    <p class="muted">No items were imported. Correct the spreadsheet errors and try again.</p>
+    <div class="errors">{% for error in errors %}<div>{{ error }}</div>{% endfor %}</div>
+</section>
+{% endif %}
+{% if preview %}
+<section class="card">
+    <h2>Valid Rows</h2>
+    <p class="muted">{{ preview|length }} row(s) passed validation. No rows were imported because the file contains errors.</p>
+    <div class="table-scroll"><table>
+        <thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Category</th><th>Selling Price</th><th>Active</th></tr></thead>
+        <tbody>{% for row in preview %}
+            <tr>
+                <td>{{ row['code'] }}</td><td>{{ row['name'] }}</td><td>{{ row['type_label'] }}</td>
+                <td>{{ row['category'] }}</td><td>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(row['selling_price']) }}</td>
+                <td>{{ 'Yes' if row['active'] else 'No' }}</td>
+            </tr>
+        {% endfor %}</tbody>
+    </table></div>
+</section>
+{% endif %}
+{% endblock %}

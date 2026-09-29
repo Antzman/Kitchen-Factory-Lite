@@ -60,6 +60,7 @@ The authenticated sidebar currently contains:
 
 - **My Dashboard** - dashboard metrics, recent activity, and stock snapshot.
 - **Stock Item Database** - stock CRUD, status changes, and CSV import.
+- **Menu Items** - saleable items, recipes, menu categories, audit history, and CSV import/export.
 - **Manufacturing System** - shared-stock manufacturing transactions.
 - **Portioning System** - separate Bulk Portioning and Yield Loss tabs.
 - **Reports** - central reporting hub.
@@ -419,6 +420,9 @@ Implemented:
 - Stock CRUD, notes, types, categories, cost per unit, and total cost.
 - Active/inactive status with saved-note requirement.
 - CSV stock import.
+- Menu item CSV import with validation and menu item CSV export.
+- Separate menu-item types, including the label "Ordinary Type".
+- Menu Categories management, separate from stock categories.
 - Stock sorting and operational Stock Item Report.
 - Manufacturing with live costing and snapshots.
 - Negative-stock and Calculator Mode settings.

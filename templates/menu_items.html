@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+{% block title %}Menu Items - Kitchen Factory{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div><h1>Menu Items</h1><p class="muted">Products available for sale and their recipe costs.</p></div>
+    <div class="report-actions">
+        <a class="secondary-btn" href="{{ url_for('import_menu_items_view') }}">Import CSV</a>
+        <a class="secondary-btn" href="{{ url_for('export_menu_items', search=search) }}">Export CSV</a>
+        <a class="secondary-btn" href="{{ url_for('create_menu_item_view') }}">Add Menu Item</a>
+    </div>
+</div>
+<section class="card">
+    <form method="get" class="menu-search">
+        <label for="menu-search">Search code, name, or category</label>
+        <input id="menu-search" name="search" value="{{ search }}" type="search">
+        <button class="primary-btn" type="submit">Search</button>
+        {% if search %}<a class="secondary-btn" href="{{ url_for('menu_items') }}">Clear</a>{% endif %}
+    </form>
+</section>
+<section class="card">
+    <div class="table-scroll">
+        <table>
+            <thead><tr>
+                <th>Code</th><th>Name</th><th>Type</th><th>Category</th>
+                <th>Cost Price</th><th>Selling Price</th><th>Gross Profit</th>
+                <th>Gross Profit %</th><th>Active</th><th>Actions</th>
+            </tr></thead>
+            <tbody>
+            {% for item in menu_items %}
+                <tr class="{% if not item['active'] %}inactive-row{% endif %}">
+                    <td>{{ item['code'] }}</td>
+                    <td>{{ item['name'] }}</td>
+                    <td>{{ item['item_type'] }}</td>
+                    <td>{{ item['category_name'] }}</td>
+                    <td>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(item['cost_price']) }}</td>
+                    <td>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(item['selling_price']) }}</td>
+                    <td>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(item['gross_profit']) }}</td>
+                    <td>{{ '%.2f'|format(item['gross_profit_percentage']) }}%</td>
+                    <td>{{ 'Yes' if item['active'] else 'No' }}</td>
+                    <td class="menu-actions">
+                        <a href="{{ url_for('menu_item_detail', menu_item_id=item['id'], mode='view') }}">View</a>
+                        <a href="{{ url_for('menu_item_detail', menu_item_id=item['id']) }}">Edit</a>
+                        <form method="post" action="{{ url_for('delete_menu_item_view', menu_item_id=item['id']) }}" onsubmit="return confirm('Delete {{ item['code'] }}?');">
+                            <button type="submit" class="text-button">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+            {% else %}
+                <tr><td colspan="10">No menu items found.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

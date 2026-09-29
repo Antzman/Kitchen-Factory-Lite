@@ -1,0 +1,40 @@
+{% extends 'base.html' %}
+{% block title %}Menu Categories - Kitchen Factory{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div><h1>Menu Categories</h1><p class="muted">Organize saleable menu items. These categories are separate from stock categories.</p></div>
+    <a class="secondary-btn" href="{{ url_for('settings') }}">Back to Settings</a>
+</div>
+<section class="card">
+    <h2>Add Category</h2>
+    <form method="post" class="grid-form">
+        <label>Category Name<input name="name" required maxlength="80"></label>
+        <button class="primary-btn" type="submit">Add Category</button>
+    </form>
+</section>
+<section class="card">
+    <h2>Category List</h2>
+    <div class="table-scroll"><table>
+        <thead><tr><th>Name</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>
+        {% for category in categories %}
+            <tr class="{% if not category['active'] %}inactive-row{% endif %}">
+                <td><form method="post" action="{{ url_for('edit_menu_category', category_id=category['id']) }}" class="inline-form"><input name="name" value="{{ category['name'] }}" required><button class="secondary-btn" type="submit">Save</button></form></td>
+                <td>{{ 'Active' if category['active'] else 'Inactive' }}</td>
+                <td class="menu-actions">
+                    <form method="post" action="{{ url_for('menu_category_status', category_id=category['id']) }}">
+                        <input type="hidden" name="active" value="{{ 0 if category['active'] else 1 }}">
+                        <button class="secondary-btn" type="submit">{{ 'Deactivate' if category['active'] else 'Activate' }}</button>
+                    </form>
+                    <form method="post" action="{{ url_for('remove_menu_category', category_id=category['id']) }}" onsubmit="return confirm('Delete category {{ category['name'] }}?');">
+                        <button class="text-button" type="submit">Delete</button>
+                    </form>
+                </td>
+            </tr>
+        {% else %}
+            <tr><td colspan="3">No menu categories found.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+</section>
+{% endblock %}

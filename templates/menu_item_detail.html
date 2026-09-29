@@ -1,0 +1,170 @@
+{% extends 'base.html' %}
+{% block title %}{% if item %}{{ item['name'] }}{% else %}New Menu Item{% endif %} - Kitchen Factory{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>{% if item %}{{ item['name'] }}{% else %}New Menu Item{% endif %}</h1>
+        <p class="muted">{% if item %}{{ item['code'] }}{% else %}Create a menu item and add its recipe.{% endif %}</p>
+    </div>
+    <a class="secondary-btn" href="{{ url_for('menu_items') }}">Back to Menu Items</a>
+</div>
+
+{% if item %}
+<nav class="portioning-tabs" aria-label="Menu item sections">
+    {% for tab_name, tab_label in [('general', 'General'), ('recipe', 'Recipe'), ('audit', 'Audit History')] %}
+    <a class="portioning-tab {% if tab == tab_name %}active{% endif %}"
+       href="{{ url_for('menu_item_detail', menu_item_id=item['id'], tab=tab_name, mode='view' if read_only else None) }}">{{ tab_label }}</a>
+    {% endfor %}
+</nav>
+{% endif %}
+
+{% if tab == 'general' %}
+<section class="card">
+    <h2>General</h2>
+    {% if not read_only %}
+    <form method="post" class="grid-form">
+        <label>Menu Item Code<input name="code" value="{{ item['code'] if item else '' }}" maxlength="80" required></label>
+        <label>Menu Item Name<input name="name" value="{{ item['name'] if item else '' }}" required></label>
+        <label>Menu Item Type<select name="item_type" required>
+            {% for value in ['Ordinary Type', 'Prep Screen Item'] %}
+            <option value="{{ value }}" {% if item and item['item_type'] == value %}selected{% endif %}>{{ value }}</option>
+            {% endfor %}
+        </select></label>
+        <label>Menu Category<select name="category_id" required>
+            {% for category in categories %}
+            <option value="{{ category['id'] }}" {% if item and item['category_id'] == category['id'] %}selected{% endif %}>{{ category['name'] }}{% if not category['active'] %} (Inactive){% endif %}</option>
+            {% endfor %}
+        </select></label>
+        <label>Cost Price<input value="{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(item['cost_price'] if item else 0) }}" readonly></label>
+        <label>Selling Price<input name="selling_price" type="number" step="0.01" min="0" value="{{ '%.2f'|format(item['selling_price']) if item else '0.00' }}" required></label>
+        <label>Gross Profit<input value="{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(item['gross_profit'] if item else 0) }}" readonly></label>
+        <label>Gross Profit Percentage<input value="{{ '%.2f'|format(item['gross_profit_percentage'] if item else 0) }}%" readonly></label>
+        <label class="setting-toggle">Active<input type="checkbox" name="active" value="1" {% if not item or item['active'] %}checked{% endif %}></label>
+        <button class="primary-btn" type="submit">Save Menu Item</button>
+    </form>
+    {% else %}
+    <dl class="manufacturing-summary menu-item-summary">
+        <dt>Code</dt><dd>{{ item['code'] }}</dd>
+        <dt>Name</dt><dd>{{ item['name'] }}</dd>
+        <dt>Type</dt><dd>{{ item['item_type'] }}</dd>
+        <dt>Category</dt><dd>{{ item['category_name'] }}</dd>
+        <dt>Cost Price</dt><dd>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(item['cost_price']) }}</dd>
+        <dt>Selling Price</dt><dd>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(item['selling_price']) }}</dd>
+        <dt>Gross Profit</dt><dd>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(item['gross_profit']) }}</dd>
+        <dt>Gross Profit Percentage</dt><dd>{{ '%.2f'|format(item['gross_profit_percentage']) }}%</dd>
+        <dt>Active</dt><dd>{{ 'Yes' if item['active'] else 'No' }}</dd>
+    </dl>
+    <a class="primary-btn" href="{{ url_for('menu_item_detail', menu_item_id=item['id']) }}">Edit Menu Item</a>
+    {% endif %}
+</section>
+{% elif tab == 'recipe' and item %}
+<section class="card">
+    <h2>Recipe</h2>
+    <p class="muted">Ingredient quantities are per one menu item. Costs use the linked inventory item's current unit cost.</p>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Item Type</th><th>Item Code</th><th>Item Name</th><th>Quantity</th><th>Unit Cost</th><th>Total Cost</th>{% if not read_only %}<th>Actions</th>{% endif %}</tr></thead>
+            <tbody>
+            {% for line in recipe %}
+                <tr>
+                {% if not read_only %}
+                    <td colspan="6">
+                        <form method="post" action="{{ url_for('save_menu_item_recipe', menu_item_id=item['id']) }}" class="recipe-line-form">
+                            <input type="hidden" name="line_id" value="{{ line['id'] }}">
+                            <select name="item_type" aria-label="Item type">
+                                {% for type in ['Stock Item', 'Manufactured Item', 'Portioned Item'] %}
+                                <option value="{{ type }}" {% if line['item_type'] == type %}selected{% endif %}>{{ type }}</option>
+                                {% endfor %}
+                            </select>
+                            <select name="stock_item_id" aria-label="Recipe inventory item" required>
+                                {% for stock in stock_items if stock['active'] or stock['id'] == line['stock_item_id'] %}
+                                <option value="{{ stock['id'] }}" data-code="{{ stock['code'] }}" data-type="{{ {'raw_material':'Stock Item','manufactured_item':'Manufactured Item','portioned_item':'Portioned Item'}[stock['item_type']] }}" {% if line['stock_item_id'] == stock['id'] %}selected{% endif %}>{{ stock['name'] }}{% if not stock['active'] %} (Inactive){% endif %}</option>
+                                {% endfor %}
+                            </select>
+                            <input name="quantity" type="number" step="0.001" min="0.001" value="{{ line['quantity'] }}" aria-label="Quantity" required>
+                            <input class="recipe-item-code" value="{{ line['item_code'] }}" aria-label="Item code" readonly>
+                            <span>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(line['unit_cost']) }} / {{ stock_items|selectattr('id', 'equalto', line['stock_item_id'])|map(attribute='unit')|first }}</span>
+                            <strong>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(line['total_cost']) }}</strong>
+                            <button type="submit" class="secondary-btn">Save</button>
+                        </form>
+                    </td>
+                    <td><form method="post" action="{{ url_for('remove_menu_item_recipe_line', menu_item_id=item['id'], line_id=line['id']) }}" onsubmit="return confirm('Delete this recipe line?');"><button type="submit" class="text-button">Delete</button></form></td>
+                {% else %}
+                    <td>{{ line['item_type'] }}</td><td>{{ line['item_code'] }}</td><td>{{ line['item_name'] }}</td>
+                    <td>{{ line['quantity'] }} {{ line['unit'] }}</td>
+                    <td>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(line['unit_cost']) }}</td>
+                    <td>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(line['total_cost']) }}</td>
+                {% endif %}
+                </tr>
+            {% else %}
+                <tr><td colspan="{{ 7 if not read_only else 6 }}">No recipe lines yet.</td></tr>
+            {% endfor %}
+            </tbody>
+            <tfoot><tr><th colspan="{{ 5 if not read_only else 5 }}">Recipe Cost</th><th>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(item['cost_price']) }}</th>{% if not read_only %}<th></th>{% endif %}</tr></tfoot>
+        </table>
+    </div>
+    {% if not read_only %}
+    <h3>Add Recipe Line</h3>
+    <form method="post" action="{{ url_for('save_menu_item_recipe', menu_item_id=item['id']) }}" class="recipe-line-form recipe-add-form">
+        <select name="item_type" aria-label="Item type">
+            <option>Stock Item</option><option>Manufactured Item</option><option>Portioned Item</option>
+        </select>
+        <select name="stock_item_id" aria-label="Recipe inventory item" required>
+            <option value="">Select inventory item</option>
+            {% for stock in stock_items if stock['active'] %}
+            <option value="{{ stock['id'] }}" data-code="{{ stock['code'] }}" data-type="{{ {'raw_material':'Stock Item','manufactured_item':'Manufactured Item','portioned_item':'Portioned Item'}[stock['item_type']] }}">{{ stock['name'] }} ({{ stock['unit'] }})</option>
+            {% endfor %}
+        </select>
+        <input name="quantity" type="number" step="0.001" min="0.001" placeholder="Quantity" required>
+        <input class="recipe-item-code" aria-label="Item code" placeholder="Item Code" readonly>
+        <button type="submit" class="primary-btn">Add Line</button>
+    </form>
+    {% endif %}
+</section>
+<script>
+document.querySelectorAll('.recipe-line-form').forEach(function (form) {
+    var type = form.querySelector('[name="item_type"]');
+    var item = form.querySelector('[name="stock_item_id"]');
+    var code = form.querySelector('.recipe-item-code');
+    if (!type || !item || !code) return;
+    function updateCode() {
+        code.value = item.selectedOptions.length ? item.selectedOptions[0].dataset.code || '' : '';
+    }
+    function filterItems() {
+        Array.from(item.options).forEach(function (option) {
+            if (!option.value) return;
+            option.hidden = option.dataset.type !== type.value;
+            if (option.selected && option.hidden) item.value = '';
+        });
+        updateCode();
+    }
+    type.addEventListener('change', filterItems);
+    item.addEventListener('change', updateCode);
+    filterItems();
+});
+</script>
+{% elif tab == 'audit' and item %}
+<section class="card">
+    <h2>Audit History</h2>
+    <div class="table-scroll">
+        <table><thead><tr><th>Date</th><th>Time (UTC)</th><th>User</th><th>Action</th><th>Module</th><th>Record</th><th>Old Value</th><th>New Value</th></tr></thead>
+            <tbody>
+            {% for entry in audit_entries %}
+                <tr>
+                    <td>{{ entry['created_at'].split('T')[0] }}</td>
+                    <td>{{ entry['created_at'].split('T')[1] if 'T' in entry['created_at'] else '' }}</td>
+                    <td>{{ entry['user_name'] or 'System' }}</td>
+                    <td>{{ entry['action'] }}</td><td>{{ entry['module'] }}</td>
+                    <td>{{ entry['record_code'] }} — {{ entry['record_name'] }}</td>
+                    <td><code>{{ entry['old_value'] or '—' }}</code></td>
+                    <td><code>{{ entry['new_value'] or '—' }}</code></td>
+                </tr>
+            {% else %}
+                <tr><td colspan="8">No audit history.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+{% endblock %}
