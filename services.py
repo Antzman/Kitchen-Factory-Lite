@@ -1,16 +1,495 @@
 from __future__ import annotations
 
 import csv
+import base64
 import io
 import json
-from datetime import datetime
+import re
+import secrets
+import logging
+from hashlib import sha256
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from db import get_db_connection
+from cryptography.fernet import Fernet
+
+from db import current_company_id, current_user_id, get_db_connection, get_secret_key
 from settings import SETTING_CHOICES, SETTING_DEFAULTS, setting_bool, setting_int, setting_value
+from werkzeug.security import check_password_hash, generate_password_hash
 
 ALLOWED_UNITS = {'kg', 'L', 'each'}
 ALLOWED_ITEM_TYPES = {'raw_material', 'manufactured_item', 'portioned_item'}
+USER_ROLES = {'Company Administrator', 'Manager', 'User'}
+STOCK_CATEGORIES = (
+    'Meat', 'Poultry', 'Seafood', 'Dairy', 'Cheese', 'Bakery', 'Bread', 'Pasta',
+    'Rice & Grains', 'Vegetables', 'Fruit', 'Herbs', 'Spices', 'Sauces',
+    'Condiments', 'Oils', 'Vinegar', 'Dry Goods', 'Baking Ingredients',
+    'Confectionery', 'Frozen Goods', 'Prepared Foods', 'Beverages', 'Other',
+)
+logger = logging.getLogger(__name__)
+
+
+def _smtp_password_cipher():
+    key = sha256(get_secret_key().encode('utf-8')).digest()
+    return Fernet(base64.urlsafe_b64encode(key))
+
+
+EMAIL_SETTING_KEYS = (
+    'smtp_server', 'smtp_port', 'smtp_username', 'smtp_password',
+    'sender_email', 'sender_display_name',
+)
+
+
+def _tenant_id(company_id=None):
+    company_id = company_id if company_id is not None else current_company_id()
+    if company_id is None:
+        raise ValueError('A company context is required for this operation.')
+    return int(company_id)
+
+
+def _valid_email(email):
+    email = (email or '').strip()
+    return bool(
+        len(email) <= 254 and
+        re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", email)
+    )
+
+
+def _validate_password(password):
+    if not password:
+        raise ValueError('Password is required.')
+    if len(password) < 12:
+        raise ValueError('Password must be at least 12 characters long.')
+    if len(password) > 1024:
+        raise ValueError('Password must not exceed 1024 characters.')
+
+
+def _record_security_audit(conn, company_id, user_id, action, record_id, description):
+    company = conn.execute(
+        'SELECT company_name FROM companies WHERE id = ?', (company_id,)
+    ).fetchone()
+    conn.execute(
+        '''INSERT INTO audit_log
+           (company_id, company_name, user_id, action, module, record_id, description, created_at)
+           VALUES (?, ?, ?, ?, 'Authentication', ?, ?, ?)''',
+        (company_id, company['company_name'] if company else '',
+         user_id, action, str(record_id), description,
+         datetime.utcnow().isoformat(timespec='seconds')),
+    )
+
+
+def register_company(company_name, email, password, confirmation):
+    company_name = (company_name or '').strip()
+    email = (email or '').strip().casefold()
+    if not company_name:
+        raise ValueError('Company name is required.')
+    if not _valid_email(email):
+        raise ValueError('Enter a valid email address.')
+    _validate_password(password)
+    if not confirmation:
+        raise ValueError('Password confirmation is required.')
+    if password != confirmation:
+        raise ValueError('Passwords do not match.')
+
+    conn = get_db_connection()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        legacy = conn.execute(
+            'SELECT * FROM companies WHERE claim_required = 1 ORDER BY id LIMIT 1'
+        ).fetchone()
+        if conn.execute(
+            'SELECT 1 FROM companies WHERE lower(email) = lower(?)', (email,)
+        ).fetchone() and not (legacy and legacy['email'].casefold() == email):
+            raise ValueError('An account already exists for that company email.')
+        if conn.execute(
+            'SELECT 1 FROM users WHERE lower(email) = lower(?)', (email,)
+        ).fetchone():
+            raise ValueError('An account already exists for that email address.')
+        now = datetime.utcnow().isoformat(timespec='seconds')
+        if legacy:
+            company_id = legacy['id']
+            conn.execute(
+                '''UPDATE companies SET company_name = ?, email = ?, claim_required = 0
+                   WHERE id = ?''',
+                (company_name, email, company_id),
+            )
+        else:
+            company_id = conn.execute(
+                '''INSERT INTO companies(company_name, email, active, created_at)
+                   VALUES (?, ?, 1, ?)''',
+                (company_name, email, now),
+            ).lastrowid
+        category_rows = [
+            (company_id, name, 'Default category', now, now)
+            for name in STOCK_CATEGORIES
+        ]
+        conn.executemany(
+            '''INSERT OR IGNORE INTO categories
+               (company_id, name, description, active, created_at, modified_at)
+               VALUES (?, ?, ?, 1, ?, ?)''',
+            category_rows,
+        )
+        now = datetime.utcnow().isoformat(timespec='seconds')
+        for category_name in ('Food', 'Beverages'):
+            conn.execute(
+                '''INSERT OR IGNORE INTO menu_categories
+                   (company_id, name, active, created_at, modified_at)
+                   VALUES (?, ?, 1, ?, ?)''',
+                (company_id, category_name, now, now),
+            )
+        for key, value in SETTING_DEFAULTS.items():
+            conn.execute(
+                '''INSERT OR IGNORE INTO company_settings(company_id, key, value)
+                   VALUES (?, ?, ?)''',
+                (company_id, key, value),
+            )
+        verification_token = secrets.token_urlsafe(32)
+        token_hash = sha256(verification_token.encode('utf-8')).hexdigest()
+        verification_expiry = (
+            datetime.utcnow().replace(microsecond=0) + timedelta(hours=24)
+        ).isoformat()
+        user_id = conn.execute(
+            '''INSERT INTO users
+               (company_id, username, email, password_hash, display_name, role, active,
+                date_created, email_verified, verification_token, verification_token_expiry)
+               VALUES (?, ?, ?, ?, ?, 'Company Administrator', 1, ?, 0, ?, ?)''',
+            (company_id, f'{company_id}:{email}', email, generate_password_hash(password),
+             company_name, now, token_hash, verification_expiry),
+        ).lastrowid
+        _record_security_audit(
+            conn, company_id, user_id, 'COMPANY REGISTERED', company_id,
+            f'{company_name} registered.',
+        )
+        _record_security_audit(
+            conn, company_id, user_id, 'USER CREATED', user_id,
+            f'Company Administrator account created for {email}.',
+        )
+        conn.commit()
+        return {
+            **dict(get_user_by_id(user_id)),
+            'verification_token': verification_token,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_user_by_id(user_id):
+    if user_id is None:
+        return None
+    conn = get_db_connection()
+    try:
+        return conn.execute(
+            '''SELECT u.*, c.company_name, c.email AS company_email, c.active AS company_active
+               FROM users u JOIN companies c ON c.id = u.company_id
+               WHERE u.id = ?''',
+            (user_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def get_user_by_email(email):
+    conn = get_db_connection()
+    try:
+        return conn.execute(
+            '''SELECT u.*, c.company_name, c.active AS company_active
+               FROM users u JOIN companies c ON c.id = u.company_id
+               WHERE lower(u.email) = lower(?)''',
+            ((email or '').strip(),),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def authenticate_user(email, password):
+    user = get_user_by_email(email)
+    if not user or not user['active'] or not user['company_active'] or not user['password_hash']:
+        return None
+    if not check_password_hash(user['password_hash'], password or ''):
+        return None
+    if not user['email_verified']:
+        return None
+    return user
+
+
+def unverified_login_account(email, password):
+    user = get_user_by_email(email)
+    if (
+        not user or not user['active'] or not user['company_active']
+        or not user['password_hash'] or user['email_verified']
+    ):
+        return None
+    return user if check_password_hash(user['password_hash'], password or '') else None
+
+
+def create_email_verification_token(user_id):
+    token = secrets.token_urlsafe(32)
+    now = datetime.utcnow()
+    conn = get_db_connection()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        updated = conn.execute(
+            '''UPDATE users SET verification_token = ?, verification_token_expiry = ?
+               WHERE id = ? AND active = 1 AND email_verified = 0''',
+            (sha256(token.encode('utf-8')).hexdigest(),
+             (now.replace(microsecond=0) + timedelta(hours=24)).isoformat(), user_id),
+        )
+        if updated.rowcount != 1:
+            conn.rollback()
+            return None
+        conn.commit()
+        return token
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def verify_email_token(token):
+    token_hash = sha256((token or '').encode('utf-8')).hexdigest()
+    now = datetime.utcnow().isoformat(timespec='seconds')
+    conn = get_db_connection()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        user = conn.execute(
+            '''SELECT u.*, c.company_name, c.active AS company_active
+               FROM users u JOIN companies c ON c.id = u.company_id
+               WHERE u.verification_token = ?''',
+            (token_hash,),
+        ).fetchone()
+        if not user:
+            _record_security_audit(
+                conn, None, None, 'VERIFICATION FAILED', 'email-verification',
+                'Email verification failed for an unknown or invalid token.',
+            )
+            conn.commit()
+            return 'invalid', None
+        if user['email_verified']:
+            conn.rollback()
+            return 'used', user['id']
+        if not user['verification_token_expiry'] or user['verification_token_expiry'] <= now:
+            _record_security_audit(
+                conn, user['company_id'], user['id'], 'VERIFICATION TOKEN EXPIRED',
+                user['id'], f'Expired email verification token used for {user["email"]}.',
+            )
+            _record_security_audit(
+                conn, user['company_id'], user['id'], 'VERIFICATION FAILED',
+                user['id'], 'Email verification failed because its token expired.',
+            )
+            conn.execute(
+                '''UPDATE users SET verification_token = NULL,
+                   verification_token_expiry = NULL WHERE id = ?''',
+                (user['id'],),
+            )
+            conn.commit()
+            return 'expired', user['id']
+        if not user['active'] or not user['company_active']:
+            _record_security_audit(
+                conn, user['company_id'], user['id'], 'VERIFICATION FAILED',
+                user['id'], 'Email verification failed for an inactive account.',
+            )
+            conn.commit()
+            return 'inactive', user['id']
+        updated = conn.execute(
+            '''UPDATE users SET email_verified = 1, verified_at = ?,
+               verification_token = NULL, verification_token_expiry = NULL
+               WHERE id = ? AND email_verified = 0 AND verification_token = ?''',
+            (now, user['id'], token_hash),
+        )
+        if updated.rowcount != 1:
+            conn.rollback()
+            return 'invalid', None
+        _record_security_audit(
+            conn, user['company_id'], user['id'], 'EMAIL VERIFIED', user['id'],
+            f'Email verified for {user["email"]}.',
+        )
+        conn.commit()
+        return 'verified', user['id']
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def record_email_delivery(company_id, user_id, message_type, recipient, status,
+                          error_type=None, resent=False):
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            '''INSERT INTO email_delivery_log
+               (company_id, user_id, message_type, recipient, status, error_type, attempted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            (company_id, user_id, message_type, recipient, status, error_type,
+             datetime.utcnow().isoformat(timespec='seconds')),
+        )
+        if message_type == 'verification':
+            action = (
+                'VERIFICATION EMAIL RESENT' if resent else 'VERIFICATION EMAIL SENT'
+            ) if status == 'sent' else (
+                'VERIFICATION EMAIL RESEND FAILED' if resent else 'VERIFICATION EMAIL FAILED'
+            )
+        else:
+            action = 'PASSWORD RESET EMAIL SENT' if status == 'sent' else 'PASSWORD RESET EMAIL FAILED'
+        _record_security_audit(
+            conn, company_id, user_id, action, user_id or recipient,
+            f'{message_type.replace("_", " ").title()} email delivery status: {status}.',
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_email_settings(company_id=None):
+    company_id = _tenant_id(company_id)
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            'SELECT key, value FROM company_settings WHERE company_id = ? AND key LIKE "email_%"',
+            (company_id,),
+        ).fetchall()
+        values = {row['key']: row['value'] for row in rows}
+    finally:
+        conn.close()
+    encrypted_password = values.get('email_smtp_password', '')
+    password_configured = bool(encrypted_password)
+    password = (
+        _smtp_password_cipher().decrypt(encrypted_password.encode('ascii')).decode('utf-8')
+        if encrypted_password else ''
+    )
+    return {
+        'smtp_server': values.get('email_smtp_server', ''),
+        'smtp_port': values.get('email_smtp_port', '587'),
+        'smtp_username': values.get('email_smtp_username', ''),
+        'smtp_password': password,
+        'smtp_password_configured': password_configured,
+        'sender_email': values.get('email_sender_email', ''),
+        'sender_display_name': values.get('email_sender_display_name', 'Kitchen Factory Lite'),
+    }
+
+
+def update_email_settings(values, company_id=None):
+    company_id = _tenant_id(company_id)
+    server = (values.get('smtp_server') or '').strip()
+    port_text = (values.get('smtp_port') or '587').strip()
+    sender = (values.get('sender_email') or '').strip()
+    if port_text:
+        try:
+            port = int(port_text)
+        except ValueError as exc:
+            raise ValueError('SMTP port must be a number between 1 and 65535.') from exc
+        if not 1 <= port <= 65535:
+            raise ValueError('SMTP port must be a number between 1 and 65535.')
+    else:
+        port = 587
+    if sender and not _valid_email(sender):
+        raise ValueError('Enter a valid sender email address.')
+    if bool(server) != bool(sender):
+        raise ValueError('SMTP Server and Sender Email Address are both required to enable email delivery.')
+    data = {
+        'email_smtp_server': server,
+        'email_smtp_port': str(port),
+        'email_smtp_username': (values.get('smtp_username') or '').strip(),
+        'email_sender_email': sender,
+        'email_sender_display_name': (values.get('sender_display_name') or '').strip()
+        or 'Kitchen Factory Lite',
+    }
+    password = values.get('smtp_password') or ''
+    if password:
+        data['email_smtp_password'] = _smtp_password_cipher().encrypt(
+            password.encode('utf-8')
+        ).decode('ascii')
+    if values.get('clear_smtp_password'):
+        data['email_smtp_password'] = ''
+    conn = get_db_connection()
+    try:
+        for key, value in data.items():
+            conn.execute(
+                '''INSERT INTO company_settings(company_id, key, value) VALUES (?, ?, ?)
+                   ON CONFLICT(company_id, key) DO UPDATE SET value = excluded.value''',
+                (company_id, key, value),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def create_password_reset_token(email):
+    user = get_user_by_email(email)
+    if not user or not user['active'] or not user['company_active']:
+        return None
+    token = secrets.token_urlsafe(32)
+    now = datetime.utcnow()
+    conn = get_db_connection()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute(
+            '''UPDATE password_reset_tokens SET used_at = ?
+               WHERE user_id = ? AND used_at IS NULL''',
+            (now.isoformat(timespec='seconds'), user['id']),
+        )
+        conn.execute(
+            '''INSERT INTO password_reset_tokens
+               (user_id, token_hash, expires_at, created_at)
+               VALUES (?, ?, ?, ?)''',
+            (user['id'], sha256(token.encode('utf-8')).hexdigest(),
+             (now.replace(microsecond=0) + timedelta(hours=1)).isoformat(),
+             now.isoformat(timespec='seconds')),
+        )
+        conn.commit()
+        return token
+    finally:
+        conn.close()
+
+
+def reset_password(token, password, confirmation):
+    _validate_password(password)
+    if not confirmation:
+        raise ValueError('Password confirmation is required.')
+    if password != confirmation:
+        raise ValueError('Passwords do not match.')
+    token_hash = sha256((token or '').encode('utf-8')).hexdigest()
+    now = datetime.utcnow().isoformat(timespec='seconds')
+    conn = get_db_connection()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        reset = conn.execute(
+            '''SELECT prt.*, u.company_id, u.email
+               FROM password_reset_tokens prt
+               JOIN users u ON u.id = prt.user_id
+               JOIN companies c ON c.id = u.company_id
+               WHERE prt.token_hash = ? AND prt.used_at IS NULL
+                 AND prt.expires_at > ? AND u.active = 1 AND c.active = 1''',
+            (token_hash, now),
+        ).fetchone()
+        if not reset:
+            raise ValueError('This password reset link is invalid or has expired.')
+        updated = conn.execute(
+            '''UPDATE password_reset_tokens SET used_at = ?
+               WHERE id = ? AND used_at IS NULL AND expires_at > ?''',
+            (now, reset['id'], now),
+        )
+        if updated.rowcount != 1:
+            raise ValueError('This password reset link is invalid or has expired.')
+        conn.execute(
+            'UPDATE users SET password_hash = ? WHERE id = ?',
+            (generate_password_hash(password), reset['user_id']),
+        )
+        _record_security_audit(
+            conn, reset['company_id'], reset['user_id'], 'PASSWORD RESET',
+            reset['user_id'], f'Password reset for {reset["email"]}.',
+        )
+        conn.commit()
+        return reset['user_id']
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def q2(value):
@@ -45,15 +524,34 @@ def calculate_yield_loss(original_quantity, usable_quantity, original_total_cost
 
 def get_user_by_username(username):
     conn = get_db_connection()
-    row = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
-    conn.close()
-    return row
+    try:
+        company_id = current_company_id()
+        if company_id is None:
+            return None
+        return conn.execute(
+            '''SELECT * FROM users WHERE company_id = ?
+               AND (username = ? OR lower(email) = lower(?))''',
+            (company_id, username, username),
+        ).fetchone()
+    finally:
+        conn.close()
 
 
 def get_setting(key, default=''):
     conn = get_db_connection()
-    row = conn.execute('SELECT value FROM system_settings WHERE key = ?', (key,)).fetchone()
-    conn.close()
+    try:
+        company_id = current_company_id()
+        if company_id is not None:
+            row = conn.execute(
+                'SELECT value FROM company_settings WHERE company_id = ? AND key = ?',
+                (company_id, key),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                'SELECT value FROM system_settings WHERE key = ?', (key,)
+            ).fetchone()
+    finally:
+        conn.close()
     value = row['value'] if row else SETTING_DEFAULTS.get(key, default)
     choices = SETTING_CHOICES.get(key)
     return value if not choices or value in choices else SETTING_DEFAULTS.get(key, default)
@@ -62,7 +560,14 @@ def get_setting(key, default=''):
 def get_settings():
     conn = get_db_connection()
     try:
-        rows = conn.execute('SELECT key, value FROM system_settings').fetchall()
+        company_id = current_company_id()
+        if company_id is None:
+            rows = conn.execute('SELECT key, value FROM system_settings').fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT key, value FROM company_settings WHERE company_id = ?',
+                (company_id,),
+            ).fetchall()
         values = dict(SETTING_DEFAULTS)
         values.update({row['key']: row['value'] for row in rows if row['key'] in SETTING_DEFAULTS})
         for key, choices in SETTING_CHOICES.items():
@@ -85,10 +590,12 @@ def update_settings(values):
         raise ValueError(f'Invalid setting value for {next(iter(invalid))}.')
     conn = get_db_connection()
     try:
+        company_id = _tenant_id()
         for key, value in values.items():
             conn.execute(
-                'INSERT INTO system_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-                (key, setting_value(key, value)),
+                '''INSERT INTO company_settings(company_id, key, value) VALUES (?, ?, ?)
+                   ON CONFLICT(company_id, key) DO UPDATE SET value = excluded.value''',
+                (company_id, key, setting_value(key, value)),
             )
         conn.commit()
     finally:
@@ -97,53 +604,159 @@ def update_settings(values):
 
 def set_setting(key, value):
     conn = get_db_connection()
-    conn.execute(
-        'INSERT INTO system_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-        (key, str(value)),
-    )
-    conn.commit()
-    conn.close()
-
-
-def list_users(include_inactive=True):
-    conn = get_db_connection()
-    query = 'SELECT * FROM users ORDER BY display_name'
-    if not include_inactive:
-        query = 'SELECT * FROM users WHERE active = 1 ORDER BY display_name'
-    rows = conn.execute(query).fetchall()
-    conn.close()
-    return rows
-
-
-def create_user(username, display_name, role, active=True):
-    if not username.strip() or not display_name.strip() or not role.strip():
-        raise ValueError('Username, display name and role are required.')
-    conn = get_db_connection()
     try:
-        if conn.execute('SELECT 1 FROM users WHERE lower(username)=lower(?)', (username.strip(),)).fetchone():
-            raise ValueError('Username already exists.')
-        now = datetime.utcnow().isoformat(timespec='seconds')
-        cur = conn.execute(
-            'INSERT INTO users(username, display_name, role, active, date_created) VALUES (?, ?, ?, ?, ?)',
-            (username.strip(), display_name.strip(), role.strip(), 1 if active else 0, now),
+        conn.execute(
+            '''INSERT INTO company_settings(company_id, key, value) VALUES (?, ?, ?)
+               ON CONFLICT(company_id, key) DO UPDATE SET value = excluded.value''',
+            (_tenant_id(), key, str(value)),
         )
         conn.commit()
-        return cur.lastrowid
     finally:
         conn.close()
 
 
-def update_user(user_id, username, display_name, role, active=True):
-    if not username.strip() or not display_name.strip() or not role.strip():
-        raise ValueError('Username, display name and role are required.')
+def list_users(include_inactive=True):
+    conn = get_db_connection()
+    company_id = _tenant_id()
+    query = 'SELECT * FROM users WHERE company_id = ? ORDER BY display_name'
+    params = [company_id]
+    if not include_inactive:
+        query = 'SELECT * FROM users WHERE company_id = ? AND active = 1 ORDER BY display_name'
+    try:
+        return conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+
+def create_user(email, display_name, role, password, confirmation, active=True):
+    email = (email or '').strip().casefold()
+    display_name = (display_name or '').strip()
+    company_id = _tenant_id()
+    if not _valid_email(email) or not display_name:
+        raise ValueError('A valid email address and name are required.')
+    if role not in USER_ROLES:
+        raise ValueError('Select a valid user role.')
+    _validate_password(password)
+    if not confirmation:
+        raise ValueError('Password confirmation is required.')
+    if password != confirmation:
+        raise ValueError('Passwords do not match.')
     conn = get_db_connection()
     try:
-        if not conn.execute('SELECT 1 FROM users WHERE id=?', (user_id,)).fetchone():
+        if conn.execute(
+            'SELECT 1 FROM users WHERE lower(email) = lower(?)',
+            (email,),
+        ).fetchone():
+            raise ValueError('A user with that email address already exists.')
+        now = datetime.utcnow().isoformat(timespec='seconds')
+        conn.execute('BEGIN IMMEDIATE')
+        user_id = conn.execute(
+            '''INSERT INTO users
+               (company_id, username, email, password_hash, display_name, role, active, date_created)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+            (company_id, f'{company_id}:{email}', email, generate_password_hash(password),
+             display_name, role, int(bool(active)), now),
+        ).lastrowid
+        _record_security_audit(
+            conn, company_id, current_user_id(), 'USER CREATED', user_id,
+            f'Created user {email}.',
+        )
+        conn.commit()
+        return user_id
+    finally:
+        conn.close()
+
+
+def update_user(user_id, email, display_name, role, active=True):
+    email = (email or '').strip().casefold()
+    display_name = (display_name or '').strip()
+    company_id = _tenant_id()
+    if not _valid_email(email) or not display_name:
+        raise ValueError('A valid email address and name are required.')
+    if role not in USER_ROLES:
+        raise ValueError('Select a valid user role.')
+    conn = get_db_connection()
+    try:
+        current = conn.execute(
+            'SELECT * FROM users WHERE id = ? AND company_id = ?',
+            (user_id, company_id),
+        ).fetchone()
+        if not current:
             raise ValueError('User not found.')
-        if conn.execute('SELECT 1 FROM users WHERE lower(username)=lower(?) AND id != ?', (username.strip(), user_id)).fetchone():
-            raise ValueError('Username already exists.')
-        conn.execute('UPDATE users SET username=?, display_name=?, role=?, active=? WHERE id=?',
-                     (username.strip(), display_name.strip(), role.strip(), 1 if active else 0, user_id))
+        if conn.execute(
+            'SELECT 1 FROM users WHERE lower(email)=lower(?) AND id != ?',
+            (email, user_id),
+        ).fetchone():
+            raise ValueError('A user with that email address already exists.')
+        if current['role'] == 'Company Administrator' and (
+            role != 'Company Administrator' or not active
+        ):
+            admin_count = conn.execute(
+                '''SELECT COUNT(*) FROM users
+                   WHERE company_id = ? AND role = 'Company Administrator'
+                     AND active = 1 AND id != ?''',
+                (company_id, user_id),
+            ).fetchone()[0]
+            if not admin_count:
+                raise ValueError('The company must retain at least one active administrator.')
+        if not active:
+            conn.execute(
+                '''UPDATE password_reset_tokens SET used_at = ?
+                   WHERE user_id = ? AND used_at IS NULL''',
+                (datetime.utcnow().isoformat(timespec='seconds'), user_id),
+            )
+        email_changed = current['email'].casefold() != email.casefold()
+        conn.execute(
+            '''UPDATE users SET username = ?, email = ?, display_name = ?, role = ?, active = ?,
+               email_verified = CASE WHEN ? THEN 0 ELSE email_verified END,
+               verified_at = CASE WHEN ? THEN NULL ELSE verified_at END,
+               verification_token = CASE WHEN ? THEN NULL ELSE verification_token END,
+               verification_token_expiry = CASE WHEN ? THEN NULL
+                   ELSE verification_token_expiry END
+               WHERE id = ? AND company_id = ?''',
+            (f'{company_id}:{email}', email, display_name, role, int(bool(active)),
+             int(email_changed), int(email_changed), int(email_changed), int(email_changed),
+             user_id, company_id),
+        )
+        if bool(current['active']) != bool(active):
+            action = 'USER ACTIVATED' if active else 'USER DISABLED'
+            _record_security_audit(
+                conn, company_id, current_user_id(), action, user_id,
+                f'{action.title()}: {email}.',
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def administrator_reset_user_password(user_id, password, confirmation):
+    _validate_password(password)
+    if not confirmation:
+        raise ValueError('Password confirmation is required.')
+    if password != confirmation:
+        raise ValueError('Passwords do not match.')
+    company_id = _tenant_id()
+    conn = get_db_connection()
+    try:
+        user = conn.execute(
+            'SELECT email FROM users WHERE id = ? AND company_id = ?',
+            (user_id, company_id),
+        ).fetchone()
+        if not user:
+            raise ValueError('User not found.')
+        conn.execute(
+            '''UPDATE password_reset_tokens SET used_at = ?
+               WHERE user_id = ? AND used_at IS NULL''',
+            (datetime.utcnow().isoformat(timespec='seconds'), user_id),
+        )
+        conn.execute(
+            'UPDATE users SET password_hash = ? WHERE id = ? AND company_id = ?',
+            (generate_password_hash(password), user_id, company_id),
+        )
+        _record_security_audit(
+            conn, company_id, current_user_id(), 'PASSWORD RESET', user_id,
+            f'Administrator reset the password for {user["email"]}.',
+        )
         conn.commit()
     finally:
         conn.close()
@@ -151,9 +764,13 @@ def update_user(user_id, username, display_name, role, active=True):
 
 def list_categories():
     conn = get_db_connection()
-    rows = conn.execute('SELECT * FROM categories WHERE active = 1 ORDER BY name').fetchall()
-    conn.close()
-    return rows
+    try:
+        return conn.execute(
+            'SELECT * FROM categories WHERE company_id = ? AND active = 1 ORDER BY name',
+            (_tenant_id(),),
+        ).fetchall()
+    finally:
+        conn.close()
 
 
 def create_category(name, description=''):
@@ -161,13 +778,19 @@ def create_category(name, description=''):
         raise ValueError('Category name is required.')
     conn = get_db_connection()
     try:
-        existing = conn.execute('SELECT 1 FROM categories WHERE lower(name) = lower(?)', (name.strip(),)).fetchone()
+        company_id = _tenant_id()
+        existing = conn.execute(
+            'SELECT 1 FROM categories WHERE company_id = ? AND lower(name) = lower(?)',
+            (company_id, name.strip()),
+        ).fetchone()
         if existing:
             raise ValueError('Category already exists.')
         now = datetime.utcnow().isoformat(timespec='seconds')
         cur = conn.execute(
-            'INSERT INTO categories(name, description, active, created_at, created_by, modified_at, modified_by) VALUES (?, ?, 1, ?, NULL, ?, NULL)',
-            (name.strip(), description.strip(), now, now)
+            '''INSERT INTO categories
+               (company_id, name, description, active, created_at, created_by, modified_at, modified_by)
+               VALUES (?, ?, ?, 1, ?, ?, ?, ?)''',
+            (company_id, name.strip(), description.strip(), now, current_user_id(), now, current_user_id())
         )
         conn.commit()
         return cur.lastrowid
@@ -180,13 +803,23 @@ def update_category(category_id, name, description=''):
         raise ValueError('Category name is required.')
     conn = get_db_connection()
     try:
-        if conn.execute('SELECT 1 FROM categories WHERE lower(name)=lower(?) AND id != ?',
-                        (name.strip(), category_id)).fetchone():
+        company_id = _tenant_id()
+        if conn.execute(
+            'SELECT 1 FROM categories WHERE company_id = ? AND lower(name)=lower(?) AND id != ?',
+            (company_id, name.strip(), category_id),
+        ).fetchone():
             raise ValueError('Category already exists.')
-        if not conn.execute('SELECT 1 FROM categories WHERE id=?', (category_id,)).fetchone():
+        if not conn.execute(
+            'SELECT 1 FROM categories WHERE id = ? AND company_id = ?',
+            (category_id, company_id),
+        ).fetchone():
             raise ValueError('Category not found.')
-        conn.execute('UPDATE categories SET name=?, description=?, modified_at=? WHERE id=?',
-                     (name.strip(), description.strip(), datetime.utcnow().isoformat(timespec='seconds'), category_id))
+        conn.execute(
+            '''UPDATE categories SET name = ?, description = ?, modified_at = ?, modified_by = ?
+               WHERE id = ? AND company_id = ?''',
+            (name.strip(), description.strip(), datetime.utcnow().isoformat(timespec='seconds'),
+             current_user_id(), category_id, company_id),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -195,11 +828,19 @@ def update_category(category_id, name, description=''):
 def set_category_active(category_id, active):
     conn = get_db_connection()
     try:
-        row = conn.execute('SELECT name FROM categories WHERE id=?', (category_id,)).fetchone()
+        company_id = _tenant_id()
+        row = conn.execute(
+            'SELECT name FROM categories WHERE id = ? AND company_id = ?',
+            (category_id, company_id),
+        ).fetchone()
         if not row:
             raise ValueError('Category not found.')
-        conn.execute('UPDATE categories SET active=?, modified_at=? WHERE id=?',
-                     (1 if active else 0, datetime.utcnow().isoformat(timespec='seconds'), category_id))
+        conn.execute(
+            '''UPDATE categories SET active = ?, modified_at = ?, modified_by = ?
+               WHERE id = ? AND company_id = ?''',
+            (1 if active else 0, datetime.utcnow().isoformat(timespec='seconds'),
+             current_user_id(), category_id, company_id),
+        )
         conn.commit()
         return row['name']
     finally:
@@ -238,13 +879,14 @@ def _menu_item_snapshot(row):
 
 def _write_menu_audit(conn, menu_item_id, record_code, record_name, user_id,
                       action, old_value, new_value):
+    company_id = _tenant_id()
     now = datetime.utcnow().isoformat(timespec='seconds')
     conn.execute(
         '''INSERT INTO menu_item_audit
-           (menu_item_id, record_code, record_name, user_id, action, module,
+           (company_id, menu_item_id, record_code, record_name, user_id, action, module,
             old_value, new_value, created_at)
-           VALUES (?, ?, ?, ?, ?, 'Menu Items', ?, ?, ?)''',
-        (menu_item_id, record_code, record_name, user_id, action,
+           VALUES (?, ?, ?, ?, ?, ?, 'Menu Items', ?, ?, ?)''',
+        (company_id, menu_item_id, record_code, record_name, user_id, action,
          json.dumps(old_value, sort_keys=True, default=str) if old_value is not None else None,
          json.dumps(new_value, sort_keys=True, default=str) if new_value is not None else None,
          now),
@@ -252,9 +894,9 @@ def _write_menu_audit(conn, menu_item_id, record_code, record_name, user_id,
     if setting_bool('audit_enabled', get_setting('audit_enabled')):
         conn.execute(
             '''INSERT INTO audit_log
-               (user_id, action, module, record_id, description, created_at)
-               VALUES (?, ?, 'Menu Items', ?, ?, ?)''',
-            (user_id, action, str(menu_item_id if menu_item_id is not None else record_code),
+               (company_id, company_name, user_id, action, module, record_id, description, created_at)
+               VALUES (?, (SELECT company_name FROM companies WHERE id = ?), ?, ?, 'Menu Items', ?, ?, ?)''',
+            (company_id, company_id, user_id, action, str(menu_item_id if menu_item_id is not None else record_code),
              f'{action.title()} {record_code} — {record_name}', now),
         )
 
@@ -262,9 +904,10 @@ def _write_menu_audit(conn, menu_item_id, record_code, record_name, user_id,
 def list_menu_categories(include_inactive=True):
     conn = get_db_connection()
     try:
-        where = '' if include_inactive else 'WHERE active = 1'
+        where = 'company_id = ?' if include_inactive else 'company_id = ? AND active = 1'
         return conn.execute(
-            f'SELECT * FROM menu_categories {where} ORDER BY name'
+            f'SELECT * FROM menu_categories WHERE {where} ORDER BY name',
+            (_tenant_id(),),
         ).fetchall()
     finally:
         conn.close()
@@ -276,14 +919,18 @@ def create_menu_category(name, user_id=None):
         raise ValueError('Menu category name is required.')
     conn = get_db_connection()
     try:
-        if conn.execute('SELECT 1 FROM menu_categories WHERE name = ? COLLATE NOCASE', (name,)).fetchone():
+        company_id = _tenant_id()
+        if conn.execute(
+            'SELECT 1 FROM menu_categories WHERE company_id = ? AND name = ? COLLATE NOCASE',
+            (company_id, name),
+        ).fetchone():
             raise ValueError('Menu category already exists.')
         now = datetime.utcnow().isoformat(timespec='seconds')
         cur = conn.execute(
             '''INSERT INTO menu_categories
-               (name, active, created_at, created_by, modified_at, modified_by)
-               VALUES (?, 1, ?, ?, ?, ?)''',
-            (name, now, user_id, now, user_id),
+               (company_id, name, active, created_at, created_by, modified_at, modified_by)
+               VALUES (?, ?, 1, ?, ?, ?, ?)''',
+            (company_id, name, now, user_id, now, user_id),
         )
         conn.commit()
         return cur.lastrowid
@@ -297,19 +944,23 @@ def update_menu_category(category_id, name, user_id=None):
         raise ValueError('Menu category name is required.')
     conn = get_db_connection()
     try:
-        current = conn.execute('SELECT * FROM menu_categories WHERE id = ?', (category_id,)).fetchone()
+        company_id = _tenant_id()
+        current = conn.execute(
+            'SELECT * FROM menu_categories WHERE id = ? AND company_id = ?',
+            (category_id, company_id),
+        ).fetchone()
         if not current:
             raise ValueError('Menu category not found.')
         duplicate = conn.execute(
-            'SELECT 1 FROM menu_categories WHERE name = ? COLLATE NOCASE AND id != ?',
-            (name, category_id),
+            'SELECT 1 FROM menu_categories WHERE company_id = ? AND name = ? COLLATE NOCASE AND id != ?',
+            (company_id, name, category_id),
         ).fetchone()
         if duplicate:
             raise ValueError('Menu category already exists.')
         now = datetime.utcnow().isoformat(timespec='seconds')
         conn.execute(
-            'UPDATE menu_categories SET name = ?, modified_at = ?, modified_by = ? WHERE id = ?',
-            (name, now, user_id, category_id),
+            'UPDATE menu_categories SET name = ?, modified_at = ?, modified_by = ? WHERE id = ? AND company_id = ?',
+            (name, now, user_id, category_id, company_id),
         )
         conn.commit()
     finally:
@@ -321,13 +972,17 @@ def set_menu_category_active(category_id, active, user_id=None):
         raise ValueError('Menu category status must be active or inactive.')
     conn = get_db_connection()
     try:
-        current = conn.execute('SELECT * FROM menu_categories WHERE id = ?', (category_id,)).fetchone()
+        company_id = _tenant_id()
+        current = conn.execute(
+            'SELECT * FROM menu_categories WHERE id = ? AND company_id = ?',
+            (category_id, company_id),
+        ).fetchone()
         if not current:
             raise ValueError('Menu category not found.')
         now = datetime.utcnow().isoformat(timespec='seconds')
         conn.execute(
-            'UPDATE menu_categories SET active = ?, modified_at = ?, modified_by = ? WHERE id = ?',
-            (int(bool(active)), now, user_id, category_id),
+            'UPDATE menu_categories SET active = ?, modified_at = ?, modified_by = ? WHERE id = ? AND company_id = ?',
+            (int(bool(active)), now, user_id, category_id, company_id),
         )
         conn.commit()
         return current['name']
@@ -338,12 +993,22 @@ def set_menu_category_active(category_id, active, user_id=None):
 def delete_menu_category(category_id):
     conn = get_db_connection()
     try:
-        category = conn.execute('SELECT name FROM menu_categories WHERE id = ?', (category_id,)).fetchone()
+        company_id = _tenant_id()
+        category = conn.execute(
+            'SELECT name FROM menu_categories WHERE id = ? AND company_id = ?',
+            (category_id, company_id),
+        ).fetchone()
         if not category:
             raise ValueError('Menu category not found.')
-        if conn.execute('SELECT 1 FROM menu_items WHERE category_id = ? LIMIT 1', (category_id,)).fetchone():
+        if conn.execute(
+            'SELECT 1 FROM menu_items WHERE category_id = ? AND company_id = ? LIMIT 1',
+            (category_id, company_id),
+        ).fetchone():
             raise ValueError('This category is assigned to menu items. Reassign them before deleting it.')
-        conn.execute('DELETE FROM menu_categories WHERE id = ?', (category_id,))
+        conn.execute(
+            'DELETE FROM menu_categories WHERE id = ? AND company_id = ?',
+            (category_id, company_id),
+        )
         conn.commit()
         return category['name']
     finally:
@@ -353,19 +1018,21 @@ def delete_menu_category(category_id):
 def list_menu_items(search=''):
     conn = get_db_connection()
     try:
+        company_id = _tenant_id()
         params = []
-        where = ''
+        where = 'WHERE mi.company_id = ?'
+        params.append(company_id)
         if search:
-            where = 'WHERE mi.code LIKE ? OR mi.name LIKE ? OR mc.name LIKE ?'
+            where += ' AND (mi.code LIKE ? OR mi.name LIKE ? OR mc.name LIKE ?)'
             term = f'%{search.strip()}%'
-            params = [term, term, term]
+            params.extend([term, term, term])
         rows = conn.execute(
             f'''SELECT mi.*, mc.name AS category_name,
                        rl.quantity AS recipe_quantity, si.unit_cost AS recipe_unit_cost
                 FROM menu_items mi
-                JOIN menu_categories mc ON mc.id = mi.category_id
+                JOIN menu_categories mc ON mc.id = mi.category_id AND mc.company_id = mi.company_id
                 LEFT JOIN menu_item_recipe_lines rl ON rl.menu_item_id = mi.id
-                LEFT JOIN stock_items si ON si.id = rl.stock_item_id
+                LEFT JOIN stock_items si ON si.id = rl.stock_item_id AND si.company_id = mi.company_id
                 {where}
                 ORDER BY mi.name COLLATE NOCASE, mi.id, rl.id''',
             params,
@@ -406,14 +1073,16 @@ def get_menu_item(menu_item_id):
 def get_menu_item_recipe(menu_item_id):
     conn = get_db_connection()
     try:
+        company_id = _tenant_id()
         rows = conn.execute(
             '''SELECT rl.*, si.code AS item_code, si.name AS item_name,
                       si.unit, si.active AS item_active, si.unit_cost AS current_unit_cost
                FROM menu_item_recipe_lines rl
-               JOIN stock_items si ON si.id = rl.stock_item_id
+               JOIN stock_items si ON si.id = rl.stock_item_id AND si.company_id = ?
+               JOIN menu_items mi ON mi.id = rl.menu_item_id AND mi.company_id = ?
                WHERE rl.menu_item_id = ?
                ORDER BY rl.id''',
-            (menu_item_id,),
+            (company_id, company_id, menu_item_id),
         ).fetchall()
         lines = []
         for row in rows:
@@ -444,20 +1113,25 @@ def create_menu_item(code, name, item_type, category_id, selling_price, user_id)
         raise ValueError('Selling price cannot be negative.')
     conn = get_db_connection()
     try:
+        company_id = _tenant_id()
         category = conn.execute(
-            'SELECT id FROM menu_categories WHERE id = ? AND active = 1', (category_id,)
+            'SELECT id FROM menu_categories WHERE id = ? AND company_id = ? AND active = 1',
+            (category_id, company_id),
         ).fetchone()
         if not category:
             raise ValueError('Select an active menu category.')
-        if conn.execute('SELECT 1 FROM menu_items WHERE code = ? COLLATE NOCASE', (code,)).fetchone():
+        if conn.execute(
+            'SELECT 1 FROM menu_items WHERE company_id = ? AND code = ? COLLATE NOCASE',
+            (company_id, code),
+        ).fetchone():
             raise ValueError('Menu item code already exists.')
         now = datetime.utcnow().isoformat(timespec='seconds')
         cur = conn.execute(
             '''INSERT INTO menu_items
-               (code, name, item_type, category_id, selling_price, active,
+               (company_id, code, name, item_type, category_id, selling_price, active,
                 date_created, date_modified, created_by, modified_by)
-               VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)''',
-            (code, name, item_type, category_id, str(price), now, now, user_id, user_id),
+               VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)''',
+            (company_id, code, name, item_type, category_id, str(price), now, now, user_id, user_id),
         )
         menu_item_id = cur.lastrowid
         _write_menu_audit(
@@ -488,17 +1162,21 @@ def update_menu_item(menu_item_id, code, name, item_type, category_id,
         raise ValueError('Selling price cannot be negative.')
     conn = get_db_connection()
     try:
-        current = conn.execute('SELECT * FROM menu_items WHERE id = ?', (menu_item_id,)).fetchone()
+        company_id = _tenant_id()
+        current = conn.execute(
+            'SELECT * FROM menu_items WHERE id = ? AND company_id = ?',
+            (menu_item_id, company_id),
+        ).fetchone()
         if not current:
             raise ValueError('Menu item not found.')
         if conn.execute(
-            'SELECT 1 FROM menu_items WHERE code = ? COLLATE NOCASE AND id != ?',
-            (code, menu_item_id),
+            'SELECT 1 FROM menu_items WHERE company_id = ? AND code = ? COLLATE NOCASE AND id != ?',
+            (company_id, code, menu_item_id),
         ).fetchone():
             raise ValueError('Another menu item already uses this code.')
         category = conn.execute(
-            'SELECT id FROM menu_categories WHERE id = ? AND (active = 1 OR id = ?)',
-            (category_id, current['category_id']),
+            'SELECT id FROM menu_categories WHERE id = ? AND company_id = ? AND (active = 1 OR id = ?)',
+            (category_id, company_id, current['category_id']),
         ).fetchone()
         if not category:
             raise ValueError('Select an active menu category.')
@@ -508,9 +1186,9 @@ def update_menu_item(menu_item_id, code, name, item_type, category_id,
             '''UPDATE menu_items
                SET code = ?, name = ?, item_type = ?, category_id = ?,
                    selling_price = ?, active = ?, date_modified = ?, modified_by = ?
-               WHERE id = ?''',
+               WHERE id = ? AND company_id = ?''',
             (code, name, item_type, category_id, str(price), int(bool(active)),
-             now, user_id, menu_item_id),
+             now, user_id, menu_item_id, company_id),
         )
         new_value = {
             'code': code, 'name': name, 'item_type': item_type,
@@ -530,24 +1208,32 @@ def update_menu_item(menu_item_id, code, name, item_type, category_id,
 def delete_menu_item(menu_item_id, user_id):
     conn = get_db_connection()
     try:
-        current = conn.execute('SELECT * FROM menu_items WHERE id = ?', (menu_item_id,)).fetchone()
+        company_id = _tenant_id()
+        current = conn.execute(
+            'SELECT * FROM menu_items WHERE id = ? AND company_id = ?',
+            (menu_item_id, company_id),
+        ).fetchone()
         if not current:
             raise ValueError('Menu item not found.')
         if conn.execute(
-            'SELECT 1 FROM menu_item_inventory_transactions WHERE menu_item_id = ? LIMIT 1',
-            (menu_item_id,),
+            'SELECT 1 FROM menu_item_inventory_transactions WHERE menu_item_id = ? AND company_id = ? LIMIT 1',
+            (menu_item_id, company_id),
         ).fetchone():
             raise ValueError('This menu item has sales history and cannot be deleted. Mark it inactive instead.')
         if conn.execute(
-            'SELECT 1 FROM menu_item_modifiers WHERE modifier_menu_item_id = ? LIMIT 1',
-            (menu_item_id,),
+            '''SELECT 1 FROM menu_item_modifiers WHERE modifier_menu_item_id = ?
+               AND company_id = ? LIMIT 1''',
+            (menu_item_id, company_id),
         ).fetchone():
             raise ValueError('This menu item is used as a modifier and cannot be deleted.')
         _write_menu_audit(
             conn, menu_item_id, current['code'], current['name'], user_id,
             'MENU ITEM DELETED', _menu_item_snapshot(current), None,
         )
-        conn.execute('DELETE FROM menu_items WHERE id = ?', (menu_item_id,))
+        conn.execute(
+            'DELETE FROM menu_items WHERE id = ? AND company_id = ?',
+            (menu_item_id, company_id),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -578,12 +1264,15 @@ def _validate_menu_item_import_rows(rows, conn):
     categories = {
         row['name'].casefold(): row['id']
         for row in conn.execute(
-            'SELECT id, name FROM menu_categories WHERE active = 1'
+            'SELECT id, name FROM menu_categories WHERE company_id = ? AND active = 1',
+            (_tenant_id(),),
         ).fetchall()
     }
     existing_codes = {
         row['code'].casefold()
-        for row in conn.execute('SELECT code FROM menu_items').fetchall()
+        for row in conn.execute(
+            'SELECT code FROM menu_items WHERE company_id = ?', (_tenant_id(),)
+        ).fetchall()
     }
     seen_codes = set()
     valid_rows = []
@@ -666,10 +1355,10 @@ def import_menu_items(rows, user_id):
         for row in valid_rows:
             cur = conn.execute(
                 '''INSERT INTO menu_items
-                   (code, name, item_type, category_id, selling_price, active,
+                   (company_id, code, name, item_type, category_id, selling_price, active,
                     date_created, date_modified, created_by, modified_by)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                (row['code'], row['name'], row['item_type'], row['category_id'],
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (_tenant_id(), row['code'], row['name'], row['item_type'], row['category_id'],
                  row['selling_price'], int(row['active']), now, now, user_id, user_id),
             )
             menu_item_id = cur.lastrowid
@@ -713,13 +1402,16 @@ def save_menu_recipe_line(menu_item_id, item_type, stock_item_id, quantity,
         raise ValueError('Recipe quantity must be greater than zero.')
     conn = get_db_connection()
     try:
+        company_id = _tenant_id()
         menu_item = conn.execute(
-            'SELECT code, name FROM menu_items WHERE id = ?', (menu_item_id,)
+            'SELECT code, name FROM menu_items WHERE id = ? AND company_id = ?',
+            (menu_item_id, company_id),
         ).fetchone()
         if not menu_item:
             raise ValueError('Menu item not found.')
         stock_item = conn.execute(
-            'SELECT * FROM stock_items WHERE id = ?', (stock_item_id,)
+            'SELECT * FROM stock_items WHERE id = ? AND company_id = ?',
+            (stock_item_id, company_id),
         ).fetchone()
         if not stock_item:
             raise ValueError('Select an existing inventory item.')
@@ -731,9 +1423,10 @@ def save_menu_recipe_line(menu_item_id, item_type, stock_item_id, quantity,
             current = conn.execute(
                 '''SELECT rl.*, si.code AS item_code, si.name AS item_name
                    FROM menu_item_recipe_lines rl
-                   JOIN stock_items si ON si.id = rl.stock_item_id
+                   JOIN stock_items si ON si.id = rl.stock_item_id AND si.company_id = ?
+                   JOIN menu_items mi ON mi.id = rl.menu_item_id AND mi.company_id = ?
                    WHERE rl.id = ? AND rl.menu_item_id = ?''',
-                (line_id, menu_item_id),
+                (company_id, company_id, line_id, menu_item_id),
             ).fetchone()
             if not current:
                 raise ValueError('Recipe line not found.')
@@ -754,16 +1447,17 @@ def save_menu_recipe_line(menu_item_id, item_type, stock_item_id, quantity,
         if line_id is None:
             line_id = conn.execute(
                 '''INSERT INTO menu_item_recipe_lines
-                   (menu_item_id, item_type, stock_item_id, quantity, unit_cost, total_cost)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                (menu_item_id, item_type, stock_item_id, str(qty), str(unit_cost), str(total_cost)),
+                   (company_id, menu_item_id, item_type, stock_item_id, quantity, unit_cost, total_cost)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                (company_id, menu_item_id, item_type, stock_item_id, str(qty), str(unit_cost), str(total_cost)),
             ).lastrowid
         else:
             conn.execute(
                 '''UPDATE menu_item_recipe_lines
                    SET item_type = ?, stock_item_id = ?, quantity = ?, unit_cost = ?, total_cost = ?
-                   WHERE id = ?''',
-                (item_type, stock_item_id, str(qty), str(unit_cost), str(total_cost), line_id),
+                   WHERE id = ? AND company_id = ? AND menu_item_id = ?''',
+                (item_type, stock_item_id, str(qty), str(unit_cost), str(total_cost),
+                 line_id, company_id, menu_item_id),
             )
         _write_menu_audit(
             conn, menu_item_id, menu_item['code'], menu_item['name'], user_id,
@@ -778,22 +1472,29 @@ def save_menu_recipe_line(menu_item_id, item_type, stock_item_id, quantity,
 def delete_menu_recipe_line(menu_item_id, line_id, user_id):
     conn = get_db_connection()
     try:
+        company_id = _tenant_id()
         menu_item = conn.execute(
-            'SELECT code, name FROM menu_items WHERE id = ?', (menu_item_id,)
+            'SELECT code, name FROM menu_items WHERE id = ? AND company_id = ?',
+            (menu_item_id, company_id),
         ).fetchone()
         if not menu_item:
             raise ValueError('Menu item not found.')
         current = conn.execute(
             '''SELECT rl.*, si.code AS item_code, si.name AS item_name
                FROM menu_item_recipe_lines rl
-               JOIN stock_items si ON si.id = rl.stock_item_id
+               JOIN stock_items si ON si.id = rl.stock_item_id AND si.company_id = ?
+               JOIN menu_items mi ON mi.id = rl.menu_item_id AND mi.company_id = ?
                WHERE rl.id = ? AND rl.menu_item_id = ?''',
-            (line_id, menu_item_id),
+            (company_id, company_id, line_id, menu_item_id),
         ).fetchone()
         if not current:
             raise ValueError('Recipe line not found.')
         old_value = _recipe_line_snapshot(current)
-        conn.execute('DELETE FROM menu_item_recipe_lines WHERE id = ?', (line_id,))
+        conn.execute(
+            '''DELETE FROM menu_item_recipe_lines WHERE id = ? AND company_id = ?
+               AND menu_item_id = ?''',
+            (line_id, company_id, menu_item_id),
+        )
         _write_menu_audit(
             conn, menu_item_id, menu_item['code'], menu_item['name'], user_id,
             'RECIPE LINE DELETED', old_value, None,
@@ -806,13 +1507,14 @@ def delete_menu_recipe_line(menu_item_id, line_id, user_id):
 def menu_item_audit_entries(menu_item_id):
     conn = get_db_connection()
     try:
+        company_id = _tenant_id()
         return conn.execute(
             '''SELECT ma.*, u.display_name AS user_name
                FROM menu_item_audit ma
                LEFT JOIN users u ON u.id = ma.user_id
-               WHERE ma.menu_item_id = ?
+               WHERE ma.menu_item_id = ? AND ma.company_id = ?
                ORDER BY ma.created_at DESC, ma.id DESC''',
-            (menu_item_id,),
+            (menu_item_id, company_id),
         ).fetchall()
     finally:
         conn.close()
@@ -829,7 +1531,8 @@ def process_menu_item_sale(menu_item_id, quantity, user_id, external_reference=N
     try:
         conn.execute('BEGIN IMMEDIATE')
         menu_item = conn.execute(
-            'SELECT * FROM menu_items WHERE id = ? AND active = 1', (menu_item_id,)
+            'SELECT * FROM menu_items WHERE id = ? AND company_id = ? AND active = 1',
+            (menu_item_id, _tenant_id()),
         ).fetchone()
         if not menu_item:
             raise ValueError('Menu item does not exist or is inactive.')
@@ -838,9 +1541,9 @@ def process_menu_item_sale(menu_item_id, quantity, user_id, external_reference=N
                       si.quantity AS available_quantity, si.active AS item_active,
                       si.unit_cost AS current_unit_cost
                FROM menu_item_recipe_lines rl
-               JOIN stock_items si ON si.id = rl.stock_item_id
+               JOIN stock_items si ON si.id = rl.stock_item_id AND si.company_id = ?
                WHERE rl.menu_item_id = ? ORDER BY rl.id''',
-            (menu_item_id,),
+            (_tenant_id(), menu_item_id),
         ).fetchall()
         if not recipe:
             raise ValueError('A recipe is required before this menu item can be sold.')
@@ -864,36 +1567,37 @@ def process_menu_item_sale(menu_item_id, quantity, user_id, external_reference=N
         now = datetime.utcnow().isoformat(timespec='seconds')
         transaction_id = conn.execute(
             '''INSERT INTO menu_item_inventory_transactions
-               (menu_item_id, transaction_type, quantity, external_reference, user_id, created_at)
-               VALUES (?, 'sale', ?, ?, ?, ?)''',
-            (menu_item_id, str(sold_quantity), external_reference, user_id, now),
+               (company_id, menu_item_id, transaction_type, quantity, external_reference, user_id, created_at)
+               VALUES (?, ?, 'sale', ?, ?, ?, ?)''',
+            (_tenant_id(), menu_item_id, str(sold_quantity), external_reference, user_id, now),
         ).lastrowid
         for line, quantity_used in deductions:
             unit_cost = Decimal(str(line['current_unit_cost']))
             total_cost = q2(quantity_used * unit_cost)
             conn.execute(
                 '''INSERT INTO menu_item_inventory_lines
-                   (transaction_id, stock_item_id, item_code, item_name, quantity, unit_cost, total_cost)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                (transaction_id, line['stock_item_id'], line['item_code'], line['item_name'],
+                   (company_id, transaction_id, stock_item_id, item_code, item_name, quantity, unit_cost, total_cost)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                (_tenant_id(), transaction_id, line['stock_item_id'], line['item_code'], line['item_name'],
                  str(quantity_used), str(unit_cost), str(total_cost)),
             )
             conn.execute(
-                'UPDATE stock_items SET quantity = CAST(quantity AS NUMERIC) - ? WHERE id = ?',
-                (str(quantity_used), line['stock_item_id']),
+                '''UPDATE stock_items SET quantity = CAST(quantity AS NUMERIC) - ?
+                   WHERE id = ? AND company_id = ?''',
+                (str(quantity_used), line['stock_item_id'], _tenant_id()),
             )
             conn.execute(
                 '''INSERT INTO stock_movements
-                   (item_id, movement_type, quantity, related_transaction, notes, created_at, user_id)
-                   VALUES (?, 'menu_sale', ?, ?, ?, ?, ?)''',
-                (line['stock_item_id'], str(-quantity_used), f'MENU-TX-{transaction_id}',
+                   (company_id, item_id, movement_type, quantity, related_transaction, notes, created_at, user_id)
+                   VALUES (?, ?, 'menu_sale', ?, ?, ?, ?, ?)''',
+                (_tenant_id(), line['stock_item_id'], str(-quantity_used), f'MENU-TX-{transaction_id}',
                  f'Sale of {menu_item["code"]}', now, user_id),
             )
         conn.execute(
             '''INSERT INTO audit_log
-               (user_id, action, module, record_id, description, created_at)
-               VALUES (?, 'MENU ITEM SOLD', 'Menu Items', ?, ?, ?)''',
-            (user_id, str(transaction_id),
+               (company_id, company_name, user_id, action, module, record_id, description, created_at)
+               VALUES (?, (SELECT company_name FROM companies WHERE id = ?), ?, 'MENU ITEM SOLD', 'Menu Items', ?, ?, ?)''',
+            (_tenant_id(), _tenant_id(), user_id, str(transaction_id),
              f'Sold {menu_item["code"]} x {sold_quantity}; inventory deducted.', now),
         )
         conn.commit()
@@ -916,9 +1620,9 @@ def process_menu_item_refund(sale_transaction_id, quantity, user_id,
         sale = conn.execute(
             '''SELECT mt.*, mi.code AS menu_code, mi.name AS menu_name
                FROM menu_item_inventory_transactions mt
-               LEFT JOIN menu_items mi ON mi.id = mt.menu_item_id
-               WHERE mt.id = ? AND mt.transaction_type = 'sale' ''',
-            (sale_transaction_id,),
+               LEFT JOIN menu_items mi ON mi.id = mt.menu_item_id AND mi.company_id = mt.company_id
+               WHERE mt.id = ? AND mt.company_id = ? AND mt.transaction_type = 'sale' ''',
+            (sale_transaction_id, _tenant_id()),
         ).fetchone()
         if not sale:
             raise ValueError('Original menu item sale was not found.')
@@ -926,24 +1630,26 @@ def process_menu_item_refund(sale_transaction_id, quantity, user_id,
         already_refunded = sum(
             (Decimal(str(row['quantity'])) for row in conn.execute(
                 '''SELECT quantity FROM menu_item_inventory_transactions
-                   WHERE original_transaction_id = ? AND transaction_type = 'refund' ''',
-                (sale_transaction_id,),
+                   WHERE original_transaction_id = ? AND company_id = ?
+                     AND transaction_type = 'refund' ''',
+                (sale_transaction_id, _tenant_id()),
             ).fetchall()),
             Decimal('0'),
         )
         if already_refunded + refund_quantity > sold_quantity:
             raise ValueError('Refund quantity exceeds the unrefunded sale quantity.')
         sold_lines = conn.execute(
-            '''SELECT * FROM menu_item_inventory_lines WHERE transaction_id = ? ORDER BY id''',
-            (sale_transaction_id,),
+            '''SELECT * FROM menu_item_inventory_lines
+               WHERE transaction_id = ? AND company_id = ? ORDER BY id''',
+            (sale_transaction_id, _tenant_id()),
         ).fetchall()
         now = datetime.utcnow().isoformat(timespec='seconds')
         transaction_id = conn.execute(
             '''INSERT INTO menu_item_inventory_transactions
-               (menu_item_id, transaction_type, quantity, external_reference,
+               (company_id, menu_item_id, transaction_type, quantity, external_reference,
                 original_transaction_id, user_id, created_at)
-               VALUES (?, 'refund', ?, ?, ?, ?, ?)''',
-            (sale['menu_item_id'], str(refund_quantity), external_reference,
+               VALUES (?, ?, 'refund', ?, ?, ?, ?, ?)''',
+            (_tenant_id(), sale['menu_item_id'], str(refund_quantity), external_reference,
              sale_transaction_id, user_id, now),
         ).lastrowid
         for line in sold_lines:
@@ -953,28 +1659,29 @@ def process_menu_item_refund(sale_transaction_id, quantity, user_id,
             total_cost = q2(returned_quantity * Decimal(str(line['unit_cost'])))
             conn.execute(
                 '''INSERT INTO menu_item_inventory_lines
-                   (transaction_id, stock_item_id, item_code, item_name, quantity, unit_cost, total_cost)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                (transaction_id, line['stock_item_id'], line['item_code'], line['item_name'],
+                   (company_id, transaction_id, stock_item_id, item_code, item_name, quantity, unit_cost, total_cost)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                (_tenant_id(), transaction_id, line['stock_item_id'], line['item_code'], line['item_name'],
                  str(returned_quantity), line['unit_cost'], str(total_cost)),
             )
             if line['stock_item_id'] is not None:
                 conn.execute(
-                    'UPDATE stock_items SET quantity = CAST(quantity AS NUMERIC) + ? WHERE id = ?',
-                    (str(returned_quantity), line['stock_item_id']),
+                    '''UPDATE stock_items SET quantity = CAST(quantity AS NUMERIC) + ?
+                       WHERE id = ? AND company_id = ?''',
+                    (str(returned_quantity), line['stock_item_id'], _tenant_id()),
                 )
                 conn.execute(
                     '''INSERT INTO stock_movements
-                       (item_id, movement_type, quantity, related_transaction, notes, created_at, user_id)
-                       VALUES (?, 'menu_refund', ?, ?, ?, ?, ?)''',
-                    (line['stock_item_id'], str(returned_quantity), f'MENU-TX-{transaction_id}',
+                       (company_id, item_id, movement_type, quantity, related_transaction, notes, created_at, user_id)
+                       VALUES (?, ?, 'menu_refund', ?, ?, ?, ?, ?)''',
+                    (_tenant_id(), line['stock_item_id'], str(returned_quantity), f'MENU-TX-{transaction_id}',
                      f'Refund of {sale["menu_code"] or "deleted menu item"}', now, user_id),
                 )
         conn.execute(
             '''INSERT INTO audit_log
-               (user_id, action, module, record_id, description, created_at)
-               VALUES (?, 'MENU ITEM REFUNDED', 'Menu Items', ?, ?, ?)''',
-            (user_id, str(transaction_id),
+               (company_id, company_name, user_id, action, module, record_id, description, created_at)
+               VALUES (?, (SELECT company_name FROM companies WHERE id = ?), ?, 'MENU ITEM REFUNDED', 'Menu Items', ?, ?, ?)''',
+            (_tenant_id(), _tenant_id(), user_id, str(transaction_id),
              f'Refunded {sale["menu_code"] or "deleted menu item"} x {refund_quantity}; inventory returned.', now),
         )
         conn.commit()
@@ -985,10 +1692,16 @@ def process_menu_item_refund(sale_transaction_id, quantity, user_id,
 
 def list_stock_items():
     conn = get_db_connection()
-    rows = conn.execute(
-        '''SELECT si.*, c.name AS category_name FROM stock_items si LEFT JOIN categories c ON c.id = si.category_id ORDER BY si.name'''
-    ).fetchall()
-    conn.close()
+    try:
+        company_id = _tenant_id()
+        rows = conn.execute(
+            '''SELECT si.*, c.name AS category_name FROM stock_items si
+               LEFT JOIN categories c ON c.id = si.category_id AND c.company_id = si.company_id
+               WHERE si.company_id = ? ORDER BY si.name''',
+            (company_id,),
+        ).fetchall()
+    finally:
+        conn.close()
     items = []
     for row in rows:
         item = dict(row)
@@ -1012,7 +1725,8 @@ def stock_item_report(search='', category='', item_type='', unit='', status='',
     sort_expression = sort_columns.get(sort, sort_columns['code'])
     order = 'DESC' if direction.lower() == 'desc' else 'ASC'
     clauses = []
-    params = []
+    params = [_tenant_id()]
+    clauses.append('si.company_id = ?')
     if search:
         clauses.append('(si.code LIKE ? OR si.name LIKE ? OR c.name LIKE ?)')
         term = f'%{search}%'
@@ -1033,7 +1747,7 @@ def stock_item_report(search='', category='', item_type='', unit='', status='',
     conn = get_db_connection()
     try:
         base = f'''FROM stock_items si
-                   LEFT JOIN categories c ON c.id = si.category_id
+                   LEFT JOIN categories c ON c.id = si.category_id AND c.company_id = si.company_id
                    {where}'''
         total_count = conn.execute(f'SELECT COUNT(*) {base}', params).fetchone()[0]
         raw_rows = conn.execute(
@@ -1066,9 +1780,13 @@ def stock_item_report(search='', category='', item_type='', unit='', status='',
 
 def get_stock_item(item_id):
     conn = get_db_connection()
-    row = conn.execute('SELECT * FROM stock_items WHERE id = ?', (item_id,)).fetchone()
-    conn.close()
-    return row
+    try:
+        return conn.execute(
+            'SELECT * FROM stock_items WHERE id = ? AND company_id = ?',
+            (item_id, _tenant_id()),
+        ).fetchone()
+    finally:
+        conn.close()
 
 
 def set_stock_item_active(item_id, active, modified_by):
@@ -1076,15 +1794,20 @@ def set_stock_item_active(item_id, active, modified_by):
         raise ValueError('Stock item status must be active or inactive.')
     conn = get_db_connection()
     try:
-        current = conn.execute('SELECT code, notes FROM stock_items WHERE id = ?', (item_id,)).fetchone()
+        company_id = _tenant_id()
+        current = conn.execute(
+            'SELECT code, notes FROM stock_items WHERE id = ? AND company_id = ?',
+            (item_id, company_id),
+        ).fetchone()
         if not current:
             raise ValueError('Stock item not found.')
         if active == 0 and not (current['notes'] or '').strip():
             raise ValueError('Add a note in the stock item edit screen before marking it inactive.')
         now = datetime.utcnow().isoformat(timespec='seconds')
         conn.execute(
-            'UPDATE stock_items SET active = ?, date_modified = ?, modified_by = ? WHERE id = ?',
-            (active, now, modified_by, item_id),
+            '''UPDATE stock_items SET active = ?, date_modified = ?, modified_by = ?
+               WHERE id = ? AND company_id = ?''',
+            (active, now, modified_by, item_id, company_id),
         )
         conn.commit()
         return current['code']
@@ -1113,12 +1836,25 @@ def create_stock_item(code, name, unit, quantity, category_id, created_by, unit_
         raise ValueError('Cost per unit cannot be negative.')
     conn = get_db_connection()
     try:
-        if conn.execute('SELECT 1 FROM stock_items WHERE lower(code) = lower(?)', (code.strip(),)).fetchone():
+        company_id = _tenant_id()
+        if conn.execute(
+            'SELECT 1 FROM stock_items WHERE company_id = ? AND lower(code) = lower(?)',
+            (company_id, code.strip()),
+        ).fetchone():
             raise ValueError('Stock code already exists.')
+        if not conn.execute(
+            'SELECT 1 FROM categories WHERE id = ? AND company_id = ? AND active = 1',
+            (category_id, company_id),
+        ).fetchone():
+            raise ValueError('Select an active stock category.')
         now = datetime.utcnow().isoformat(timespec='seconds')
         cur = conn.execute(
-            'INSERT INTO stock_items(code, name, item_type, unit, quantity, category_id, active, date_created, date_modified, created_by, modified_by, unit_cost) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)',
-            (code.strip(), name.strip(), item_type, unit, str(qty), category_id, now, now, created_by, created_by, str(cost))
+            '''INSERT INTO stock_items
+               (company_id, code, name, item_type, unit, quantity, category_id, active,
+                date_created, date_modified, created_by, modified_by, unit_cost)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)''',
+            (company_id, code.strip(), name.strip(), item_type, unit, str(qty), category_id,
+             now, now, created_by, created_by, str(cost))
         )
         conn.commit()
         return cur.lastrowid
@@ -1147,17 +1883,33 @@ def update_stock_item(item_id, code, name, unit, quantity, category_id, modified
         raise ValueError('Cost per unit cannot be negative.')
     conn = get_db_connection()
     try:
-        current = conn.execute('SELECT * FROM stock_items WHERE id = ?', (item_id,)).fetchone()
+        company_id = _tenant_id()
+        current = conn.execute(
+            'SELECT * FROM stock_items WHERE id = ? AND company_id = ?',
+            (item_id, company_id),
+        ).fetchone()
         if not current:
             raise ValueError('Stock item not found.')
         if current['code'].lower() != code.strip().lower():
-            existing = conn.execute('SELECT 1 FROM stock_items WHERE lower(code) = lower(?) AND id != ?', (code.strip(), item_id)).fetchone()
+            existing = conn.execute(
+                '''SELECT 1 FROM stock_items WHERE company_id = ?
+                   AND lower(code) = lower(?) AND id != ?''',
+                (company_id, code.strip(), item_id),
+            ).fetchone()
             if existing:
                 raise ValueError('Another stock item already uses this code.')
+        if not conn.execute(
+            'SELECT 1 FROM categories WHERE id = ? AND company_id = ?',
+            (category_id, company_id),
+        ).fetchone():
+            raise ValueError('Select a stock category belonging to this company.')
         now = datetime.utcnow().isoformat(timespec='seconds')
         conn.execute(
-            'UPDATE stock_items SET code = ?, name = ?, item_type = ?, unit = ?, quantity = ?, category_id = ?, active = ?, date_modified = ?, modified_by = ?, unit_cost = ?, notes = ? WHERE id = ?',
-            (code.strip(), name.strip(), item_type, unit, str(qty), category_id, 1 if active else 0, now, modified_by, str(cost), notes.strip(), item_id)
+            '''UPDATE stock_items SET code = ?, name = ?, item_type = ?, unit = ?,
+               quantity = ?, category_id = ?, active = ?, date_modified = ?, modified_by = ?,
+               unit_cost = ?, notes = ? WHERE id = ? AND company_id = ?''',
+            (code.strip(), name.strip(), item_type, unit, str(qty), category_id,
+             1 if active else 0, now, modified_by, str(cost), notes.strip(), item_id, company_id)
         )
         conn.commit()
         return item_id
@@ -1221,20 +1973,32 @@ def parse_csv(text):
 def import_stock_items(rows, user_id):
     conn = get_db_connection()
     try:
+        company_id = _tenant_id()
         accepted = []
         rejected = []
         now = datetime.utcnow().isoformat(timespec='seconds')
         for row in rows:
-            category = conn.execute('SELECT id FROM categories WHERE lower(name) = lower(?) AND active = 1', (row['category'],)).fetchone()
+            category = conn.execute(
+                '''SELECT id FROM categories WHERE company_id = ? AND lower(name) = lower(?)
+                   AND active = 1''',
+                (company_id, row['category']),
+            ).fetchone()
             if not category:
                 rejected.append({**row, 'error': 'Category does not exist or is inactive'})
                 continue
-            if conn.execute('SELECT 1 FROM stock_items WHERE lower(code) = lower(?)', (row['code'],)).fetchone():
+            if conn.execute(
+                'SELECT 1 FROM stock_items WHERE company_id = ? AND lower(code) = lower(?)',
+                (company_id, row['code']),
+            ).fetchone():
                 rejected.append({**row, 'error': 'Duplicate stock code found'})
                 continue
             cur = conn.execute(
-                'INSERT INTO stock_items(code, name, unit, quantity, category_id, active, date_created, date_modified, created_by, modified_by, unit_cost) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)',
-                (row['code'], row['name'], row['unit'], row['quantity'], category['id'], now, now, user_id, user_id, '0.00')
+                '''INSERT INTO stock_items
+                   (company_id, code, name, unit, quantity, category_id, active,
+                    date_created, date_modified, created_by, modified_by, unit_cost)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)''',
+                (company_id, row['code'], row['name'], row['unit'], row['quantity'],
+                 category['id'], now, now, user_id, user_id, '0.00')
             )
             accepted.append(row)
         conn.commit()
@@ -1257,7 +2021,11 @@ def create_manufacturing_transaction(output_item_id, ingredient_rows, expected_o
 
     conn = get_db_connection()
     try:
-        output = conn.execute('SELECT * FROM stock_items WHERE id = ?', (output_item_id,)).fetchone()
+        company_id = _tenant_id()
+        output = conn.execute(
+            'SELECT * FROM stock_items WHERE id = ? AND company_id = ?',
+            (output_item_id, company_id),
+        ).fetchone()
         if not output:
             raise ValueError('Output stock item does not exist.')
         if output['item_type'] != 'manufactured_item':
@@ -1280,7 +2048,10 @@ def create_manufacturing_transaction(output_item_id, ingredient_rows, expected_o
             if item_id in seen_ids:
                 raise ValueError('A stock item may only be used once as an ingredient.')
             seen_ids.add(item_id)
-            item = conn.execute('SELECT * FROM stock_items WHERE id = ?', (item_id,)).fetchone()
+            item = conn.execute(
+                'SELECT * FROM stock_items WHERE id = ? AND company_id = ?',
+                (item_id, company_id),
+            ).fetchone()
             if not item:
                 raise ValueError('Ingredient stock item not found.')
             try:
@@ -1305,22 +2076,45 @@ def create_manufacturing_transaction(output_item_id, ingredient_rows, expected_o
         cost_per_unit = total_cost / actual if actual > 0 else Decimal('0')
         now = datetime.utcnow().isoformat(timespec='seconds')
         cur = conn.execute(
-            'INSERT INTO manufacturing_transactions(output_item_id, expected_output, actual_output, total_input_quantity, yield_percentage, manufacturing_date, user_id, notes, total_cost, cost_per_unit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (output_item_id, str(expected), str(actual), str(total_input), str(yield_pct), now, user_id, notes, str(q2(total_cost)), str(q2(cost_per_unit)))
+            '''INSERT INTO manufacturing_transactions
+               (company_id, output_item_id, expected_output, actual_output, total_input_quantity,
+                yield_percentage, manufacturing_date, user_id, notes, total_cost, cost_per_unit)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (company_id, output_item_id, str(expected), str(actual), str(total_input),
+             str(yield_pct), now, user_id, notes, str(q2(total_cost)), str(q2(cost_per_unit)))
         )
         transaction_id = cur.lastrowid
         for item, q, ingredient_cost in ingredient_entries:
             conn.execute(
-                'INSERT INTO manufacturing_ingredients(transaction_id, item_id, quantity, unit_cost, total_cost) VALUES (?, ?, ?, ?, ?)',
-                (transaction_id, item['id'], str(q), str(item['unit_cost']), str(q2(ingredient_cost))),
+                '''INSERT INTO manufacturing_ingredients
+                   (company_id, transaction_id, item_id, quantity, unit_cost, total_cost)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                (company_id, transaction_id, item['id'], str(q), str(item['unit_cost']), str(q2(ingredient_cost))),
             )
             if not bypass_stock_update:
-                conn.execute('UPDATE stock_items SET quantity = quantity - ?, date_modified = ? WHERE id = ?', (str(q), now, item['id']))
+                conn.execute(
+                    '''UPDATE stock_items SET quantity = quantity - ?, date_modified = ?
+                       WHERE id = ? AND company_id = ?''',
+                    (str(q), now, item['id'], company_id),
+                )
         if not bypass_stock_update:
-            conn.execute('UPDATE stock_items SET quantity = quantity + ?, date_modified = ? WHERE id = ?', (str(actual), now, output_item_id))
+            conn.execute(
+                '''UPDATE stock_items SET quantity = quantity + ?, date_modified = ?
+                   WHERE id = ? AND company_id = ?''',
+                (str(actual), now, output_item_id, company_id),
+            )
             if setting_bool('manufacturing_auto_cost', get_setting('manufacturing_auto_cost')):
-                conn.execute('UPDATE stock_items SET unit_cost = ? WHERE id = ?', (str(q2(cost_per_unit)), output_item_id))
-            conn.execute('INSERT INTO stock_movements(item_id, movement_type, quantity, related_transaction, notes, created_at, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)', (output_item_id, 'manufacturing_output', str(actual), f'MFG-{transaction_id}', notes, now, user_id))
+                conn.execute(
+                    'UPDATE stock_items SET unit_cost = ? WHERE id = ? AND company_id = ?',
+                    (str(q2(cost_per_unit)), output_item_id, company_id),
+                )
+            conn.execute(
+                '''INSERT INTO stock_movements
+                   (company_id, item_id, movement_type, quantity, related_transaction,
+                    notes, created_at, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                (company_id, output_item_id, 'manufacturing_output', str(actual),
+                 f'MFG-{transaction_id}', notes, now, user_id),
+            )
         conn.commit()
         return {'transaction_id': transaction_id, 'yield_percentage': yield_pct, 'total_cost': total_cost, 'cost_per_unit': cost_per_unit}
     finally:
@@ -1341,9 +2135,16 @@ def create_bulk_portioning(source_item_id, destination_item_id, quantity_portion
 
     conn = get_db_connection()
     try:
+        company_id = _tenant_id()
         calculator_mode = setting_bool('calculator_mode', get_setting('calculator_mode'))
-        source = conn.execute('SELECT * FROM stock_items WHERE id = ?', (source_item_id,)).fetchone()
-        dest = conn.execute('SELECT * FROM stock_items WHERE id = ?', (destination_item_id,)).fetchone()
+        source = conn.execute(
+            'SELECT * FROM stock_items WHERE id = ? AND company_id = ?',
+            (source_item_id, company_id),
+        ).fetchone()
+        dest = conn.execute(
+            'SELECT * FROM stock_items WHERE id = ? AND company_id = ?',
+            (destination_item_id, company_id),
+        ).fetchone()
         if not source or not dest:
             raise ValueError('Source and destination stock items must exist.')
         if dest['item_type'] != 'portioned_item':
@@ -1356,14 +2157,30 @@ def create_bulk_portioning(source_item_id, destination_item_id, quantity_portion
         transaction_notes = notes.strip()
         if waste_reason.strip():
             transaction_notes = f'{transaction_notes}\nWaste reason: {waste_reason.strip()}'.strip()
-        session_id = conn.execute('INSERT INTO portioning_sessions(source_item_id, session_date, user_id, notes) VALUES (?, ?, ?, ?)', (source_item_id, now, user_id, notes)).lastrowid
+        session_id = conn.execute(
+            '''INSERT INTO portioning_sessions(company_id, source_item_id, session_date, user_id, notes)
+               VALUES (?, ?, ?, ?, ?)''',
+            (company_id, source_item_id, now, user_id, notes),
+        ).lastrowid
         conn.execute(
-            'INSERT INTO portioning_transactions(session_id, source_item_id, destination_item_id, original_quantity, quantity_portioned, waste_quantity, yield_percentage, original_cost, adjusted_cost, transaction_date, user_id, notes, transaction_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (session_id, source_item_id, destination_item_id, source['quantity'], str(qty), '0.00', '100.00', '0.00', '0.00', now, user_id, transaction_notes, 'bulk')
+            '''INSERT INTO portioning_transactions
+               (company_id, session_id, source_item_id, destination_item_id, original_quantity,
+                quantity_portioned, waste_quantity, yield_percentage, original_cost, adjusted_cost,
+                transaction_date, user_id, notes, transaction_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (company_id, session_id, source_item_id, destination_item_id, source['quantity'],
+             str(qty), '0.00', '100.00', '0.00', '0.00', now, user_id,
+             transaction_notes, 'bulk')
         )
         if not calculator_mode:
-            conn.execute('UPDATE stock_items SET quantity = quantity - ? WHERE id = ?', (str(qty), source_item_id))
-            conn.execute('UPDATE stock_items SET quantity = quantity + ? WHERE id = ?', (str(qty), destination_item_id))
+            conn.execute(
+                'UPDATE stock_items SET quantity = quantity - ? WHERE id = ? AND company_id = ?',
+                (str(qty), source_item_id, company_id),
+            )
+            conn.execute(
+                'UPDATE stock_items SET quantity = quantity + ? WHERE id = ? AND company_id = ?',
+                (str(qty), destination_item_id, company_id),
+            )
         conn.commit()
         return {'session_id': session_id}
     finally:
@@ -1388,12 +2205,19 @@ def create_yield_loss_portioning(source_item_id, destination_item_id, original_q
 
     conn = get_db_connection()
     try:
+        company_id = _tenant_id()
         calculator_mode = setting_bool('calculator_mode', get_setting('calculator_mode'))
-        source = conn.execute('SELECT * FROM stock_items WHERE id = ?', (source_item_id,)).fetchone()
+        source = conn.execute(
+            'SELECT * FROM stock_items WHERE id = ? AND company_id = ?',
+            (source_item_id, company_id),
+        ).fetchone()
         if not source:
             raise ValueError('Source stock item does not exist.')
         if destination_item_id:
-            dest = conn.execute('SELECT * FROM stock_items WHERE id = ?', (destination_item_id,)).fetchone()
+            dest = conn.execute(
+                'SELECT * FROM stock_items WHERE id = ? AND company_id = ?',
+                (destination_item_id, company_id),
+            ).fetchone()
             if not dest:
                 raise ValueError('Destination stock item does not exist.')
             if dest['item_type'] != 'portioned_item':
@@ -1412,15 +2236,32 @@ def create_yield_loss_portioning(source_item_id, destination_item_id, original_q
         transaction_notes = notes.strip()
         if waste_reason.strip():
             transaction_notes = f'{transaction_notes}\nWaste reason: {waste_reason.strip()}'.strip()
-        session_id = conn.execute('INSERT INTO portioning_sessions(source_item_id, session_date, user_id, notes) VALUES (?, ?, ?, ?)', (source_item_id, now, user_id, notes)).lastrowid
+        session_id = conn.execute(
+            '''INSERT INTO portioning_sessions(company_id, source_item_id, session_date, user_id, notes)
+               VALUES (?, ?, ?, ?, ?)''',
+            (company_id, source_item_id, now, user_id, notes),
+        ).lastrowid
         conn.execute(
-            'INSERT INTO portioning_transactions(session_id, source_item_id, destination_item_id, original_quantity, quantity_portioned, waste_quantity, yield_percentage, original_cost, adjusted_cost, transaction_date, user_id, notes, transaction_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (session_id, source_item_id, destination_item_id or source_item_id, str(original), str(usable), str(result['waste_quantity']), str(result['yield_percentage']), str(cost), str(result['adjusted_cost_per_unit']), now, user_id, transaction_notes, 'yield_loss')
+            '''INSERT INTO portioning_transactions
+               (company_id, session_id, source_item_id, destination_item_id, original_quantity,
+                quantity_portioned, waste_quantity, yield_percentage, original_cost, adjusted_cost,
+                transaction_date, user_id, notes, transaction_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (company_id, session_id, source_item_id, destination_item_id or source_item_id,
+             str(original), str(usable), str(result['waste_quantity']),
+             str(result['yield_percentage']), str(cost), str(result['adjusted_cost_per_unit']),
+             now, user_id, transaction_notes, 'yield_loss')
         )
         if not calculator_mode:
-            conn.execute('UPDATE stock_items SET quantity = quantity - ? WHERE id = ?', (str(original), source_item_id))
+            conn.execute(
+                'UPDATE stock_items SET quantity = quantity - ? WHERE id = ? AND company_id = ?',
+                (str(original), source_item_id, company_id),
+            )
             if destination_item_id:
-                conn.execute('UPDATE stock_items SET quantity = quantity + ? WHERE id = ?', (str(usable), destination_item_id))
+                conn.execute(
+                    'UPDATE stock_items SET quantity = quantity + ? WHERE id = ? AND company_id = ?',
+                    (str(usable), destination_item_id, company_id),
+                )
         conn.commit()
         return {'session_id': session_id, 'adjusted_cost_per_unit': result['adjusted_cost_per_unit'], 'yield_warning': result['yield_warning']}
     finally:
@@ -1429,21 +2270,30 @@ def create_yield_loss_portioning(source_item_id, destination_item_id, original_q
 
 def list_recent_portioning(limit=10):
     conn = get_db_connection()
-    rows = conn.execute(
-        '''SELECT pt.*, s.name AS source_name, d.name AS destination_name, u.display_name AS user_name FROM portioning_transactions pt LEFT JOIN stock_items s ON s.id = pt.source_item_id LEFT JOIN stock_items d ON d.id = pt.destination_item_id LEFT JOIN users u ON u.id = pt.user_id ORDER BY pt.transaction_date DESC LIMIT ?''',
-        (limit,)
-    ).fetchall()
-    conn.close()
-    return rows
+    try:
+        company_id = _tenant_id()
+        return conn.execute(
+            '''SELECT pt.*, s.name AS source_name, d.name AS destination_name,
+                      u.display_name AS user_name
+               FROM portioning_transactions pt
+               LEFT JOIN stock_items s ON s.id = pt.source_item_id AND s.company_id = pt.company_id
+               LEFT JOIN stock_items d ON d.id = pt.destination_item_id AND d.company_id = pt.company_id
+               LEFT JOIN users u ON u.id = pt.user_id AND u.company_id = pt.company_id
+               WHERE pt.company_id = ? ORDER BY pt.transaction_date DESC LIMIT ?''',
+            (company_id, limit),
+        ).fetchall()
+    finally:
+        conn.close()
 
 
 def dashboard_metrics():
     conn = get_db_connection()
+    company_id = _tenant_id()
     metrics = {
-        'total_stock_items': conn.execute('SELECT COUNT(*) FROM stock_items').fetchone()[0],
-        'manufacturing_transactions': conn.execute('SELECT COUNT(*) FROM manufacturing_transactions').fetchone()[0],
-        'portioning_transactions': conn.execute('SELECT COUNT(*) FROM portioning_transactions').fetchone()[0],
-        'recent_activity': conn.execute('SELECT COUNT(*) FROM audit_log').fetchone()[0],
+        'total_stock_items': conn.execute('SELECT COUNT(*) FROM stock_items WHERE company_id = ?', (company_id,)).fetchone()[0],
+        'manufacturing_transactions': conn.execute('SELECT COUNT(*) FROM manufacturing_transactions WHERE company_id = ?', (company_id,)).fetchone()[0],
+        'portioning_transactions': conn.execute('SELECT COUNT(*) FROM portioning_transactions WHERE company_id = ?', (company_id,)).fetchone()[0],
+        'recent_activity': conn.execute('SELECT COUNT(*) FROM audit_log WHERE company_id = ?', (company_id,)).fetchone()[0],
     }
     conn.close()
     return metrics
@@ -1454,9 +2304,10 @@ def audit_entries(limit=20):
     retention = setting_int('audit_retention_days', get_setting('audit_retention_days'))
     query = '''SELECT al.*, u.display_name AS user_name FROM audit_log al
                LEFT JOIN users u ON u.id = al.user_id'''
-    params = []
+    params = [_tenant_id()]
+    query += ' WHERE al.company_id = ?'
     if retention > 0:
-        query += " WHERE al.created_at >= datetime('now', ?)"
+        query += " AND al.created_at >= datetime('now', ?)"
         params.append(f'-{retention} days')
     query += ' ORDER BY al.created_at DESC LIMIT ?'
     params.append(limit)
@@ -1468,8 +2319,12 @@ def audit_entries(limit=20):
 def list_manufacturing_history(limit=20):
     conn = get_db_connection()
     rows = conn.execute(
-        '''SELECT mt.*, o.name AS output_name, u.display_name AS user_name FROM manufacturing_transactions mt LEFT JOIN stock_items o ON o.id = mt.output_item_id LEFT JOIN users u ON u.id = mt.user_id ORDER BY mt.manufacturing_date DESC LIMIT ?''',
-        (limit,)
+        '''SELECT mt.*, o.name AS output_name, u.display_name AS user_name
+           FROM manufacturing_transactions mt
+           LEFT JOIN stock_items o ON o.id = mt.output_item_id AND o.company_id = mt.company_id
+           LEFT JOIN users u ON u.id = mt.user_id AND u.company_id = mt.company_id
+           WHERE mt.company_id = ? ORDER BY mt.manufacturing_date DESC LIMIT ?''',
+        (_tenant_id(), limit)
     ).fetchall()
     conn.close()
     return rows
@@ -1486,9 +2341,12 @@ def add_audit(user_id, action, module, record_id, description):
         description = f'{description} [module={module}; record={record_id}]'
     conn = get_db_connection()
     now = datetime.utcnow().isoformat(timespec='seconds')
+    company_id = _tenant_id()
     conn.execute(
-        'INSERT INTO audit_log(user_id, action, module, record_id, description, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        (user_id, action, module, str(record_id), description, now)
+        '''INSERT INTO audit_log
+           (company_id, company_name, user_id, action, module, record_id, description, created_at)
+           VALUES (?, (SELECT company_name FROM companies WHERE id = ?), ?, ?, ?, ?, ?, ?)''',
+        (company_id, company_id, user_id, action, module, str(record_id), description, now)
     )
     conn.commit()
     conn.close()

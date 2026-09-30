@@ -1,6 +1,8 @@
 import sqlite3
 import os
+import secrets
 import sys
+from contextvars import ContextVar
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -20,6 +22,318 @@ def _database_path():
 
 
 DB_PATH = _database_path()
+_CURRENT_COMPANY_ID = ContextVar('current_company_id', default=None)
+_CURRENT_USER_ID = ContextVar('current_user_id', default=None)
+
+
+def set_tenant_context(company_id, user_id):
+    _CURRENT_COMPANY_ID.set(company_id)
+    _CURRENT_USER_ID.set(user_id)
+
+
+def clear_tenant_context():
+    _CURRENT_COMPANY_ID.set(None)
+    _CURRENT_USER_ID.set(None)
+
+
+def current_company_id():
+    return _CURRENT_COMPANY_ID.get()
+
+
+def current_user_id():
+    return _CURRENT_USER_ID.get()
+
+_TENANT_TABLES = (
+    'categories', 'users', 'stock_items', 'menu_categories', 'menu_items',
+    'menu_item_recipe_lines', 'menu_item_modifier_groups', 'menu_item_modifiers',
+    'menu_item_audit', 'menu_item_inventory_transactions',
+    'menu_item_inventory_lines', 'manufacturing_transactions',
+    'manufacturing_ingredients', 'portioning_sessions',
+    'portioning_transactions', 'audit_log', 'stock_movements',
+)
+
+
+def _table_columns(conn, table_name):
+    return {row['name'] for row in conn.execute(f'PRAGMA table_info({table_name})')}
+
+
+def _ensure_column(conn, table_name, column_name, definition):
+    if column_name not in _table_columns(conn, table_name):
+        conn.execute(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}')
+
+
+def _rebuild_tenant_unique_tables(conn):
+    schemas = {
+        'categories': """
+            CREATE TABLE categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT,
+                created_by INTEGER,
+                modified_at TEXT,
+                modified_by INTEGER
+            )
+        """,
+        'stock_items': """
+            CREATE TABLE stock_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER,
+                code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                item_type TEXT NOT NULL DEFAULT 'raw_material'
+                    CHECK(item_type IN ('raw_material','manufactured_item','portioned_item')),
+                unit TEXT NOT NULL CHECK(unit IN ('kg','L','each')),
+                quantity TEXT NOT NULL DEFAULT '0',
+                category_id INTEGER,
+                active INTEGER NOT NULL DEFAULT 1,
+                date_created TEXT NOT NULL,
+                date_modified TEXT NOT NULL,
+                created_by INTEGER,
+                modified_by INTEGER,
+                unit_cost TEXT NOT NULL DEFAULT '0',
+                notes TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(category_id) REFERENCES categories(id)
+            )
+        """,
+        'menu_categories': """
+            CREATE TABLE menu_categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER,
+                name TEXT NOT NULL COLLATE NOCASE,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                created_by INTEGER,
+                modified_at TEXT NOT NULL,
+                modified_by INTEGER,
+                FOREIGN KEY(created_by) REFERENCES users(id),
+                FOREIGN KEY(modified_by) REFERENCES users(id)
+            )
+        """,
+        'menu_items': """
+            CREATE TABLE menu_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER,
+                code TEXT NOT NULL COLLATE NOCASE,
+                name TEXT NOT NULL,
+                item_type TEXT NOT NULL CHECK(item_type IN ('Ordinary Menu Item','Prep Screen Item')),
+                category_id INTEGER NOT NULL,
+                selling_price TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                date_created TEXT NOT NULL,
+                date_modified TEXT NOT NULL,
+                created_by INTEGER,
+                modified_by INTEGER,
+                FOREIGN KEY(category_id) REFERENCES menu_categories(id),
+                FOREIGN KEY(created_by) REFERENCES users(id),
+                FOREIGN KEY(modified_by) REFERENCES users(id)
+            )
+        """,
+    }
+    indexes = {
+        'categories': 'CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_company_name ON categories(company_id, name COLLATE NOCASE)',
+        'stock_items': 'CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_items_company_code ON stock_items(company_id, code COLLATE NOCASE)',
+        'menu_categories': 'CREATE UNIQUE INDEX IF NOT EXISTS idx_menu_categories_company_name ON menu_categories(company_id, name COLLATE NOCASE)',
+        'menu_items': 'CREATE UNIQUE INDEX IF NOT EXISTS idx_menu_items_company_code ON menu_items(company_id, code COLLATE NOCASE)',
+    }
+    conn.commit()
+    conn.execute('PRAGMA foreign_keys = OFF')
+    conn.execute('PRAGMA legacy_alter_table = ON')
+    try:
+        for table_name, create_sql in schemas.items():
+            unique_indexes = conn.execute(
+                f'PRAGMA index_list({table_name})'
+            ).fetchall()
+            if not any(index['origin'] == 'u' for index in unique_indexes):
+                conn.execute(indexes[table_name])
+                continue
+            old_table = f'{table_name}_tenant_migration_old'
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (old_table,),
+            ).fetchone():
+                conn.execute(f'DROP TABLE {old_table}')
+            conn.execute(f'ALTER TABLE {table_name} RENAME TO {old_table}')
+            conn.execute(create_sql)
+            old_columns = _table_columns(conn, old_table)
+            new_columns = _table_columns(conn, table_name)
+            columns = [name for name in old_columns if name in new_columns]
+            names = ', '.join(f'"{name}"' for name in columns)
+            conn.execute(
+                f'INSERT INTO {table_name} ({names}) SELECT {names} FROM {old_table}'
+            )
+            conn.execute(f'DROP TABLE {old_table}')
+            conn.execute(indexes[table_name])
+            conn.execute(
+                f'CREATE INDEX IF NOT EXISTS idx_{table_name}_company_id '
+                f'ON {table_name}(company_id)'
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute('PRAGMA legacy_alter_table = OFF')
+        conn.execute('PRAGMA foreign_keys = ON')
+    violations = conn.execute('PRAGMA foreign_key_check').fetchall()
+    if violations:
+        raise sqlite3.IntegrityError(
+            f'Tenant schema migration produced {len(violations)} foreign key violation(s).'
+        )
+
+
+def _migrate_company_auth(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS companies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            claim_required INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_password_reset_user
+            ON password_reset_tokens(user_id, expires_at);
+
+        CREATE TABLE IF NOT EXISTS company_settings (
+            company_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY(company_id, key),
+            FOREIGN KEY(company_id) REFERENCES companies(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS email_delivery_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id INTEGER,
+            user_id INTEGER,
+            message_type TEXT NOT NULL,
+            recipient TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error_type TEXT,
+            attempted_at TEXT NOT NULL,
+            FOREIGN KEY(company_id) REFERENCES companies(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        """
+    )
+    for table_name in _TENANT_TABLES:
+        _ensure_column(conn, table_name, 'company_id', 'INTEGER')
+    user_columns = _table_columns(conn, 'users')
+    verification_columns_missing = 'email_verified' not in user_columns
+    _ensure_column(conn, 'users', 'email', 'TEXT')
+    _ensure_column(conn, 'users', 'password_hash', 'TEXT')
+    _ensure_column(conn, 'users', 'permissions_version', 'INTEGER NOT NULL DEFAULT 1')
+    _ensure_column(conn, 'users', 'email_verified', 'INTEGER NOT NULL DEFAULT 0')
+    _ensure_column(conn, 'users', 'verification_token', 'TEXT')
+    _ensure_column(conn, 'users', 'verification_token_expiry', 'TEXT')
+    _ensure_column(conn, 'users', 'verified_at', 'TEXT')
+    _ensure_column(conn, 'audit_log', 'company_name', "TEXT NOT NULL DEFAULT ''")
+    if verification_columns_missing:
+        conn.execute(
+            'UPDATE users SET email_verified = 1 WHERE password_hash IS NOT NULL'
+        )
+
+    companies_count = conn.execute('SELECT COUNT(*) FROM companies').fetchone()[0]
+    if not companies_count:
+        existing_data = any(
+            conn.execute(f'SELECT 1 FROM {table_name} LIMIT 1').fetchone()
+            for table_name in ('users', 'categories', 'stock_items', 'menu_items')
+        )
+        if existing_data:
+            now = datetime.utcnow().isoformat(timespec='seconds')
+            conn.execute(
+                '''INSERT INTO companies
+                   (company_name, email, active, created_at, claim_required)
+                   VALUES (?, ?, 1, ?, 1)''',
+                ('Kitchen Factory Legacy Workspace', 'legacy-workspace@invalid.local', now),
+            )
+
+    legacy = conn.execute(
+        'SELECT id FROM companies WHERE claim_required = 1 ORDER BY id LIMIT 1'
+    ).fetchone()
+    if legacy:
+        company_id = legacy['id']
+        for table_name in _TENANT_TABLES:
+            conn.execute(
+                f'UPDATE {table_name} SET company_id = ? WHERE company_id IS NULL',
+                (company_id,),
+            )
+        for user in conn.execute(
+            'SELECT id, username, display_name, role, active FROM users WHERE company_id = ?',
+            (company_id,),
+        ).fetchall():
+            conn.execute(
+                '''UPDATE users SET email = ?, active = 0,
+                   role = CASE WHEN lower(role) LIKE '%admin%' THEN 'Company Administrator'
+                               WHEN lower(role) LIKE '%manager%' THEN 'Manager'
+                               ELSE 'User' END
+                   WHERE id = ?''',
+                (f'legacy-user-{user["id"]}@invalid.local', user['id']),
+            )
+
+    conn.execute('DROP INDEX IF EXISTS idx_users_company_email_unique')
+    conn.execute(
+        '''CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
+           ON users(lower(email)) WHERE email IS NOT NULL'''
+    )
+    conn.execute(
+        '''CREATE INDEX IF NOT EXISTS idx_users_verification_token
+           ON users(verification_token) WHERE verification_token IS NOT NULL'''
+    )
+    for table_name in _TENANT_TABLES:
+        conn.execute(
+            f'CREATE INDEX IF NOT EXISTS idx_{table_name}_company_id '
+            f'ON {table_name}(company_id)'
+        )
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'system_settings'"
+    ).fetchone():
+        if 'company_id' not in _table_columns(conn, 'system_settings'):
+            _ensure_column(conn, 'system_settings', 'company_id', 'INTEGER')
+            if legacy:
+                conn.execute(
+                    'UPDATE system_settings SET company_id = ? WHERE company_id IS NULL',
+                    (legacy['id'],),
+                )
+            conn.execute(
+                '''INSERT OR IGNORE INTO company_settings(company_id, key, value)
+                   SELECT company_id, key, value FROM system_settings
+                   WHERE company_id IS NOT NULL'''
+            )
+
+
+def get_secret_key():
+    configured = os.environ.get('KITCHEN_FACTORY_SECRET_KEY')
+    if configured:
+        if len(configured) < 32:
+            raise ValueError('KITCHEN_FACTORY_SECRET_KEY must contain at least 32 characters.')
+        return configured
+    key_path = DB_PATH.parent / '.kitchen_factory_secret'
+    try:
+        return key_path.read_text(encoding='ascii').strip()
+    except FileNotFoundError:
+        key = secrets.token_urlsafe(48)
+        try:
+            with key_path.open('x', encoding='ascii') as key_file:
+                key_file.write(key)
+        except FileExistsError:
+            return key_path.read_text(encoding='ascii').strip()
+        return key
 
 
 def get_db_connection():
@@ -37,7 +351,7 @@ def init_db():
             """
             CREATE TABLE IF NOT EXISTS categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
                 description TEXT DEFAULT '',
                 active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT,
@@ -57,7 +371,7 @@ def init_db():
 
             CREATE TABLE IF NOT EXISTS stock_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code TEXT NOT NULL UNIQUE,
+                code TEXT NOT NULL,
                 name TEXT NOT NULL,
                 item_type TEXT NOT NULL DEFAULT 'raw_material' CHECK(item_type IN ('raw_material','manufactured_item','portioned_item')),
                 unit TEXT NOT NULL CHECK(unit IN ('kg','L','each')),
@@ -75,7 +389,7 @@ def init_db():
 
             CREATE TABLE IF NOT EXISTS menu_categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                name TEXT NOT NULL COLLATE NOCASE,
                 active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 created_by INTEGER,
@@ -87,7 +401,7 @@ def init_db():
 
             CREATE TABLE IF NOT EXISTS menu_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                code TEXT NOT NULL COLLATE NOCASE,
                 name TEXT NOT NULL,
                 item_type TEXT NOT NULL CHECK(item_type IN ('Ordinary Menu Item','Prep Screen Item')),
                 category_id INTEGER NOT NULL,
@@ -327,6 +641,8 @@ def init_db():
             conn.execute("ALTER TABLE manufacturing_ingredients ADD COLUMN unit_cost TEXT NOT NULL DEFAULT '0'")
         if 'total_cost' not in ingredient_columns:
             conn.execute("ALTER TABLE manufacturing_ingredients ADD COLUMN total_cost TEXT NOT NULL DEFAULT '0'")
+        _migrate_company_auth(conn)
+        _rebuild_tenant_unique_tables(conn)
         conn.executemany(
             "INSERT OR IGNORE INTO system_settings(key, value) VALUES (?, ?)",
             list(SETTING_DEFAULTS.items()),
@@ -356,63 +672,7 @@ def init_db():
 def seed_data():
     conn = get_db_connection()
     try:
-        if not conn.execute(
-            "SELECT 1 FROM system_settings WHERE key = 'menu_categories_seeded'"
-        ).fetchone():
-            now = datetime.utcnow().isoformat(timespec='seconds')
-            for name in ('Food', 'Beverages'):
-                conn.execute(
-                    """INSERT OR IGNORE INTO menu_categories
-                       (name, active, created_at, modified_at) VALUES (?, 1, ?, ?)""",
-                    (name, now, now),
-                )
-            conn.execute(
-                "INSERT INTO system_settings(key, value) VALUES ('menu_categories_seeded', '1')"
-            )
-
-        default_categories = [
-            'Meat', 'Poultry', 'Seafood', 'Dairy', 'Cheese', 'Bakery', 'Bread', 'Pasta',
-            'Rice & Grains', 'Vegetables', 'Fruit', 'Herbs', 'Spices', 'Sauces', 'Condiments',
-            'Oils', 'Vinegar', 'Dry Goods', 'Baking Ingredients', 'Confectionery', 'Frozen Goods',
-            'Prepared Foods', 'Beverages', 'Other'
-        ]
-        if conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0] == 0:
-            now = datetime.utcnow().isoformat(timespec='seconds')
-            for name in default_categories:
-                conn.execute(
-                    "INSERT INTO categories(name, description, active, created_at, created_by, modified_at, modified_by) VALUES (?, ?, 1, ?, NULL, ?, NULL)",
-                    (name, 'Default category', now, now)
-                )
-
-        if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
-            now = datetime.utcnow().isoformat(timespec='seconds')
-            rows = [
-                ('admin', 'System Admin', 'Administrator', 1, now),
-                ('manager', 'Kitchen Manager', 'Manager', 1, now),
-                ('user', 'Kitchen User', 'User', 1, now),
-            ]
-            conn.executemany(
-                "INSERT INTO users(username, display_name, role, active, date_created) VALUES (?, ?, ?, ?, ?)",
-                rows,
-            )
-
-        if conn.execute("SELECT COUNT(*) FROM stock_items").fetchone()[0] == 0:
-            user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()['id']
-            category_id = conn.execute("SELECT id FROM categories WHERE name = 'Prepared Foods'").fetchone()['id']
-            now = datetime.utcnow().isoformat(timespec='seconds')
-            items = [
-                ('MILK-001', 'Milk', 'kg', '5.000', category_id, 1, now, now, user_id, user_id, '0.00'),
-                ('CHEESE-001', 'Cheddar Cheese', 'kg', '2.000', category_id, 1, now, now, user_id, user_id, '0.00'),
-                ('BUTTER-001', 'Butter', 'kg', '0.500', category_id, 1, now, now, user_id, user_id, '0.00'),
-                ('SALT-001', 'Salt', 'kg', '0.050', category_id, 1, now, now, user_id, user_id, '0.00'),
-                ('PEPPER-001', 'Pepper', 'kg', '0.025', category_id, 1, now, now, user_id, user_id, '0.00'),
-                ('SAUCE-001', 'Pepper Sauce', 'kg', '0.000', category_id, 1, now, now, user_id, user_id, '0.00'),
-            ]
-            conn.executemany(
-                "INSERT INTO stock_items(code, name, unit, quantity, category_id, active, date_created, date_modified, created_by, modified_by, unit_cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                items,
-            )
-
+        # New companies receive their own seeded categories and settings at registration.
         conn.commit()
     finally:
         conn.close()

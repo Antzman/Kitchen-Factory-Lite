@@ -1,5 +1,61 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="card"><h1>Users</h1><form method="post" class="grid-form"><label>Username<input name="username" required></label><label>Display name<input name="display_name" required></label><label>Role<input name="role" value="User" required></label><label class="setting-toggle"><input type="checkbox" name="active" value="1" checked> Active</label><button class="primary-btn">Add user</button></form></div>
-<div class="card"><table><thead><tr><th>Username</th><th>Display Name</th><th>Role</th><th>Active</th><th>Edit</th></tr></thead><tbody>{% for row in users %}<tr><form method="post"><input type="hidden" name="user_id" value="{{ row['id'] }}"><td><input name="username" value="{{ row['username'] }}"></td><td><input name="display_name" value="{{ row['display_name'] }}"></td><td><input name="role" value="{{ row['role'] }}"></td><td><input type="checkbox" name="active" value="1" {% if row['active'] %}checked{% endif %}></td><td><button class="secondary-btn">Save</button></td></form></tr>{% endfor %}</tbody></table></div>
+<div class="card">
+    <h1>User Management</h1>
+    <form method="post" class="grid-form">
+        <label>Name<input name="display_name" required maxlength="120"></label>
+        <label>Email Address<input type="email" name="email" required maxlength="254"></label>
+        <label>Role
+            <select name="role" required>
+                <option>Company Administrator</option>
+                <option>Manager</option>
+                <option selected>User</option>
+            </select>
+        </label>
+        <label>Password<input type="password" name="password" required minlength="12" autocomplete="new-password"></label>
+        <label>Confirm Password<input type="password" name="confirm_password" required minlength="12" autocomplete="new-password"></label>
+        <label class="setting-toggle"><input type="checkbox" name="active" value="1" checked> Active</label>
+        <button class="primary-btn">Create User</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Company Users</h2>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Save</th></tr></thead>
+            <tbody>
+            {% for row in users %}
+                <tr>
+                    <td colspan="5">
+                        <form method="post" class="grid-form">
+                            <input type="hidden" name="user_id" value="{{ row['id'] }}">
+                            <label>Name<input name="display_name" value="{{ row['display_name'] }}" required></label>
+                            <label>Email<input type="email" name="email" value="{{ row['email'] }}" required>
+                                <span class="muted">{% if row['email_verified'] %}Email verified{% else %}Email not verified{% endif %}</span>
+                            </label>
+                            <label>Role
+                                <select name="role">
+                                    {% for role in ('Company Administrator', 'Manager', 'User') %}
+                                    <option value="{{ role }}" {% if row['role'] == role %}selected{% endif %}>{{ role }}</option>
+                                    {% endfor %}
+                                </select>
+                            </label>
+                            <label class="setting-toggle"><input type="checkbox" name="active" value="1" {% if row['active'] %}checked{% endif %}> Active</label>
+                            <button class="secondary-btn">Save</button>
+                        </form>
+                        <form method="post" action="{{ url_for('reset_user_password', user_id=row['id']) }}" class="grid-form">
+                            <label>New Password<input type="password" name="password" required minlength="12" autocomplete="new-password"></label>
+                            <label>Confirm Password<input type="password" name="confirm_password" required minlength="12" autocomplete="new-password"></label>
+                            <button class="secondary-btn">Reset Password</button>
+                        </form>
+                    </td>
+                </tr>
+            {% else %}
+                <tr><td colspan="5">No users found.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
 {% endblock %}

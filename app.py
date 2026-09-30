@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 import csv
+import hmac
 import io
 import os
+import secrets
 from datetime import datetime
 from decimal import Decimal
+from urllib.parse import urljoin
 
 from flask import Flask, flash, redirect, render_template, request, session, url_for
+from email_service import send_password_reset_email, send_verification_email
 
-from db import get_db_connection, init_db, seed_data
+from db import (
+    clear_tenant_context,
+    get_db_connection,
+    get_secret_key,
+    init_db,
+    seed_data,
+    set_tenant_context,
+)
 from services import (
     add_audit,
     audit_entries,
@@ -19,6 +30,18 @@ from services import (
     create_yield_loss_portioning,
     dashboard_metrics,
     get_user_by_username,
+    get_user_by_id,
+    get_user_by_email,
+    authenticate_user,
+    register_company,
+    create_password_reset_token,
+    create_email_verification_token,
+    get_email_settings,
+    record_email_delivery,
+    reset_password,
+    unverified_login_account,
+    update_email_settings,
+    verify_email_token,
     get_settings,
     get_setting,
     import_stock_items,
@@ -36,6 +59,7 @@ from services import (
     list_users,
     create_user,
     update_user,
+    administrator_reset_user_password,
     update_category,
     set_category_active,
     list_menu_categories,
@@ -61,41 +85,212 @@ from settings import settings_by_section
 
 def create_app():
     app = Flask(__name__)
-    app.secret_key = 'kitchen-factory-secret-key'
+    app.secret_key = get_secret_key()
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE='Lax',
+        SESSION_COOKIE_SECURE=(
+            os.environ.get('KITCHEN_FACTORY_COOKIE_SECURE', '1' if os.environ.get('PORT') else '0')
+            == '1'
+        ),
+        PERMANENT_SESSION_LIFETIME=__import__('datetime').timedelta(hours=12),
+    )
 
     first_run = init_db()
     seed_data()
     app.config['FIRST_RUN'] = first_run
 
+    def deliver_verification_email(user, token, resent=False):
+        verification_link = public_url('verify_email', token=token)
+        email_configuration = get_email_settings(user['company_id'])
+        result = send_verification_email(
+            user['email'], verification_link, email_configuration,
+        )
+        record_email_delivery(
+            user['company_id'], user['id'], 'verification', user['email'],
+            result.status, result.error_type, resent=resent,
+        )
+        return verification_link, result
+
+    def public_url(endpoint, **values):
+        path = url_for(endpoint, **values)
+        public_base = os.environ.get('KITCHEN_FACTORY_PUBLIC_URL', '').strip()
+        if public_base:
+            return urljoin(f'{public_base.rstrip("/")}/', path.lstrip('/'))
+        return url_for(endpoint, _external=True, **values)
+
     @app.context_processor
     def inject_settings():
-        return {'settings': get_settings()}
+        if 'csrf_token' not in session:
+            session['csrf_token'] = secrets.token_urlsafe(32)
+        return {'settings': get_settings(), 'csrf_token': session['csrf_token']}
 
     @app.before_request
     def require_login():
-        public_routes = {'login', 'static'}
+        if 'csrf_token' not in session:
+            session['csrf_token'] = secrets.token_urlsafe(32)
+        if request.method == 'POST':
+            submitted = request.form.get('csrf_token') or request.headers.get('X-CSRF-Token', '')
+            expected = session.get('csrf_token', '')
+            if not expected or not submitted or not hmac.compare_digest(submitted, expected):
+                flash('Your session security token expired. Please try again.', 'error')
+                return redirect(url_for('login'))
+        public_routes = {
+            'login', 'register', 'forgot_password', 'reset_password_view',
+            'verify_email', 'resend_verification', 'static',
+        }
         if request.endpoint in public_routes:
             return None
-        if 'username' not in session:
+        user = get_user_by_id(session.get('user_id'))
+        if (
+            not user or not user['active'] or not user['company_active']
+            or not user['email_verified']
+        ):
+            session.clear()
             return redirect(url_for('login'))
+        g_user = dict(user)
+        request.environ['kitchen_factory_user'] = g_user
+        set_tenant_context(user['company_id'], user['id'])
+        if request.endpoint == 'users' and user['role'] != 'Company Administrator':
+            flash('Only a Company Administrator can manage users.', 'error')
+            return redirect(url_for('dashboard'))
         return None
 
     @app.route('/login', methods=['GET', 'POST'])
     def login():
         if request.method == 'POST':
-            username = request.form.get('username', '').strip()
-            user = get_user_by_username(username)
-            if user and user['active']:
-                session['username'] = username
+            email = request.form.get('email', '').strip()
+            user = authenticate_user(email, request.form.get('password', ''))
+            if user:
+                session.clear()
+                session['user_id'] = user['id']
+                session['company_id'] = user['company_id']
+                session['username'] = user['email']
+                session.permanent = True
+                set_tenant_context(user['company_id'], user['id'])
                 flash('Logged in successfully.', 'success')
                 return redirect(url_for('dashboard'))
-            flash('Invalid or inactive account.', 'error')
-        return render_template('login.html', first_run=app.config.get('FIRST_RUN', False))
+            unverified_user = unverified_login_account(
+                email, request.form.get('password', ''),
+            )
+            if unverified_user:
+                flash('Please verify your email address before signing in.', 'error')
+                return redirect(url_for('login'))
+            flash('Invalid email address or password.', 'error')
+        return render_template('login.html')
 
-    @app.route('/logout')
+    @app.route('/register', methods=['GET', 'POST'])
+    def register():
+        if request.method == 'POST':
+            try:
+                user = register_company(
+                    request.form.get('company_name', ''),
+                    request.form.get('email', ''),
+                    request.form.get('password', ''),
+                    request.form.get('confirm_password', ''),
+                )
+                verification_link, delivery = deliver_verification_email(
+                    user, user['verification_token'],
+                )
+                flash(
+                    'Company registered. Verify your email address before signing in.',
+                    'success',
+                )
+                if delivery.mode == 'console' and delivery.status == 'sent':
+                    flash(f'Verification link: {verification_link}', 'success')
+                elif delivery.status == 'failed':
+                    flash(
+                        'We could not send the verification email. You can request another link.',
+                        'error',
+                    )
+                return redirect(url_for('login'))
+            except ValueError as exc:
+                flash(str(exc), 'error')
+        return render_template('register.html')
+
+    @app.route('/forgot-password', methods=['GET', 'POST'])
+    def forgot_password():
+        reset_url = None
+        if request.method == 'POST':
+            token = create_password_reset_token(request.form.get('email', ''))
+            user = get_user_by_email(request.form.get('email', '')) if token else None
+            delivery = None
+            if token and user:
+                reset_link = public_url('reset_password_view', token=token)
+                delivery = send_password_reset_email(
+                    user['email'], reset_link, get_email_settings(user['company_id']),
+                )
+                record_email_delivery(
+                    user['company_id'], user['id'], 'password_reset', user['email'],
+                    delivery.status, delivery.error_type,
+                )
+            flash(
+                'If an active account exists for that email address, password reset instructions have been sent.',
+                'success',
+            )
+            if delivery and delivery.mode == 'console' and delivery.status == 'sent':
+                reset_url = public_url('reset_password_view', token=token)
+        return render_template('forgot_password.html', reset_url=reset_url)
+
+    @app.route('/verify-email/<token>')
+    def verify_email(token):
+        status, _user_id = verify_email_token(token)
+        if status == 'verified':
+            flash('Email verified successfully. You can now sign in.', 'success')
+        elif status == 'expired':
+            flash('This verification link has expired. Request a new verification email.', 'error')
+        elif status == 'used':
+            flash('This email address has already been verified. You can sign in.', 'success')
+        else:
+            flash('This verification link is invalid. Request a new verification email.', 'error')
+        return redirect(url_for('login'))
+
+    @app.route('/resend-verification', methods=['GET', 'POST'])
+    def resend_verification():
+        verification_link = None
+        if request.method == 'POST':
+            email = request.form.get('email', '').strip()
+            user = get_user_by_email(email)
+            if user and user['active'] and user['company_active'] and not user['email_verified']:
+                token = create_email_verification_token(user['id'])
+                if token:
+                    verification_link, delivery = deliver_verification_email(
+                        user, token, resent=True,
+                    )
+                    if delivery.mode != 'console' or delivery.status != 'sent':
+                        verification_link = None
+            flash(
+                'If an active, unverified account exists for that email address, '
+                'a verification email has been sent.',
+                'success',
+            )
+        return render_template(
+            'resend_verification.html', verification_link=verification_link,
+        )
+
+    @app.route('/reset-password/<token>', methods=['GET', 'POST'])
+    def reset_password_view(token):
+        if request.method == 'POST':
+            try:
+                reset_password(
+                    token, request.form.get('password', ''),
+                    request.form.get('confirm_password', ''),
+                )
+                flash('Password updated. You can now sign in.', 'success')
+                return redirect(url_for('login'))
+            except ValueError as exc:
+                flash(str(exc), 'error')
+        return render_template('reset_password.html', token=token)
+
+    @app.route('/logout', methods=['POST'])
     def logout():
         session.clear()
+        clear_tenant_context()
         return redirect(url_for('login'))
+
+    @app.teardown_request
+    def reset_request_context(error=None):
+        clear_tenant_context()
 
     @app.route('/about')
     def about():
@@ -610,13 +805,35 @@ def create_app():
             try:
                 user_id = request.form.get('user_id')
                 if user_id:
-                    update_user(int(user_id), request.form.get('username', ''), request.form.get('display_name', ''),
+                    update_user(int(user_id), request.form.get('email', ''), request.form.get('display_name', ''),
                                 request.form.get('role', ''), request.form.get('active') == '1')
                     action = 'USER UPDATED'
                 else:
-                    user_id = create_user(request.form.get('username', ''), request.form.get('display_name', ''),
-                                          request.form.get('role', ''), request.form.get('active') == '1')
+                    user_id = create_user(
+                        request.form.get('email', ''), request.form.get('display_name', ''),
+                        request.form.get('role', ''), request.form.get('password', ''),
+                        request.form.get('confirm_password', ''),
+                        request.form.get('active') == '1',
+                    )
                     action = 'USER CREATED'
+                managed_user = get_user_by_id(int(user_id))
+                if (
+                    managed_user and managed_user['active']
+                    and not managed_user['email_verified']
+                ):
+                    verification_token = create_email_verification_token(managed_user['id'])
+                    if verification_token:
+                        verification_link, delivery = deliver_verification_email(
+                            managed_user, verification_token,
+                        )
+                        if delivery.mode == 'console' and delivery.status == 'sent':
+                            flash(f'Verification link: {verification_link}', 'success')
+                        elif delivery.status == 'failed':
+                            flash(
+                                'User saved, but the verification email could not be sent. '
+                                'They can request another link.',
+                                'error',
+                            )
                 add_audit(user['id'], action, 'Users', user_id, 'User administration change')
                 flash('User saved.', 'success')
             except (TypeError, ValueError) as exc:
@@ -624,6 +841,22 @@ def create_app():
             return redirect(url_for('users'))
         rows = list_users()
         return render_template('users.html', user=user, users=rows)
+
+    @app.route('/users/<int:user_id>/reset-password', methods=['POST'])
+    def reset_user_password(user_id):
+        user = get_user_by_username(session['username'])
+        if user['role'] != 'Company Administrator':
+            flash('Only a Company Administrator can reset user passwords.', 'error')
+            return redirect(url_for('dashboard'))
+        try:
+            administrator_reset_user_password(
+                user_id, request.form.get('password', ''),
+                request.form.get('confirm_password', ''),
+            )
+            flash('User password reset successfully.', 'success')
+        except ValueError as exc:
+            flash(str(exc), 'error')
+        return redirect(url_for('users'))
 
     @app.route('/settings', methods=['GET', 'POST'])
     def settings():
@@ -651,7 +884,39 @@ def create_app():
             allow_negative_stock=values.get('allow_negative_stock') == '1',
             settings=values,
             setting_sections=settings_by_section(values),
+            email_settings={
+                **{
+                    key: value for key, value in get_email_settings(user['company_id']).items()
+                    if key != 'smtp_password'
+                },
+                'smtp_password': '',
+            },
         )
+
+    @app.route('/settings/email', methods=['POST'])
+    def save_email_settings():
+        user = get_user_by_username(session['username'])
+        if user['role'] != 'Company Administrator':
+            flash('Only a Company Administrator can change email settings.', 'error')
+            return redirect(url_for('settings'))
+        try:
+            update_email_settings({
+                'smtp_server': request.form.get('smtp_server', ''),
+                'smtp_port': request.form.get('smtp_port', '587'),
+                'smtp_username': request.form.get('smtp_username', ''),
+                'smtp_password': request.form.get('smtp_password', ''),
+                'clear_smtp_password': request.form.get('clear_smtp_password') == '1',
+                'sender_email': request.form.get('sender_email', ''),
+                'sender_display_name': request.form.get('sender_display_name', ''),
+            })
+            add_audit(
+                user['id'], 'EMAIL SETTINGS UPDATED', 'Settings',
+                'email', 'Updated SMTP email settings.',
+            )
+            flash('Email settings saved.', 'success')
+        except ValueError as exc:
+            flash(str(exc), 'error')
+        return redirect(url_for('settings'))
 
     @app.route('/export-csv')
     def export_csv():

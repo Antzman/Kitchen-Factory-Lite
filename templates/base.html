@@ -20,7 +20,9 @@
                 <a class="{% if request.endpoint in ['reports', 'stock_item_report_view', 'audit_log'] %}active{% endif %}" href="{{ url_for('reports') }}">Reports</a>
                 <a class="{% if request.endpoint in ['settings', 'users', 'categories', 'menu_categories', 'edit_menu_category', 'menu_category_status', 'remove_menu_category'] %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a>
                 <a class="{% if request.endpoint == 'about' %}active{% endif %}" href="{{ url_for('about') }}">About</a>
-                <a href="{{ url_for('logout') }}">Logout</a>
+                <form method="post" action="{{ url_for('logout') }}" class="nav-logout">
+                    <button type="submit" class="nav-link">Logout</button>
+                </form>
             </nav>
             {% endif %}
         </aside>
@@ -37,5 +39,18 @@
             {% block content %}{% endblock %}
         </main>
     </div>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('form[method="post" i]').forEach((form) => {
+    if (!form.querySelector('input[name="csrf_token"]')) {
+      const token = document.createElement('input');
+      token.type = 'hidden';
+      token.name = 'csrf_token';
+      token.value = {{ csrf_token|tojson }};
+      form.appendChild(token);
+    }
+  });
+});
+</script>
 </body>
 </html>

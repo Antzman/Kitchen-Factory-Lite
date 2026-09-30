@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 import db
-from db import seed_data
+from db import clear_tenant_context, seed_data, set_tenant_context
 from services import (
     create_menu_category,
     create_menu_item,
@@ -20,8 +20,11 @@ from services import (
     parse_menu_item_csv,
     process_menu_item_refund,
     process_menu_item_sale,
+    register_company,
+    list_stock_items,
     save_menu_recipe_line,
     validate_menu_item_import_rows,
+    verify_email_token,
 )
 
 
@@ -30,8 +33,14 @@ def menu_database(tmp_path, monkeypatch):
     monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'menu-test.db')
     db.init_db()
     seed_data()
+    user = register_company(
+        'Menu Test Company', 'owner@example.test',
+        'long-test-password-123', 'long-test-password-123',
+    )
+    verify_email_token(user['verification_token'])
+    set_tenant_context(user['company_id'], user['id'])
     conn = db.get_db_connection()
-    user_id = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()['id']
+    user_id = user['id']
     stock_category_id = conn.execute(
         "SELECT id FROM categories WHERE name = 'Prepared Foods'"
     ).fetchone()['id']
@@ -39,7 +48,8 @@ def menu_database(tmp_path, monkeypatch):
         "SELECT id FROM menu_categories WHERE name = 'Food'"
     ).fetchone()['id']
     conn.close()
-    return user_id, stock_category_id, food_category_id
+    yield user_id, stock_category_id, food_category_id
+    clear_tenant_context()
 
 
 def test_menu_item_recipe_cost_and_audit(menu_database):
@@ -190,6 +200,7 @@ def test_menu_item_csv_import_and_validation(menu_database):
 
 def test_menu_item_screens_render(menu_database):
     user_id, stock_category_id, menu_category_id = menu_database
+    company_id = db.current_company_id()
     stock_id = create_stock_item(
         'BUN001', 'Burger Bun', 'each', '20', stock_category_id, user_id, '4.00'
     )
@@ -204,7 +215,10 @@ def test_menu_item_screens_render(menu_database):
     application.testing = True
     client = application.test_client()
     with client.session_transaction() as user_session:
-        user_session['username'] = 'admin'
+        user_session['user_id'] = user_id
+        user_session['company_id'] = company_id
+        user_session['username'] = 'owner@example.test'
+        user_session['csrf_token'] = 'test-csrf-token'
 
     assert client.get('/menu-items').status_code == 200
     assert client.get('/menuitems').status_code == 200
@@ -218,6 +232,7 @@ def test_menu_item_screens_render(menu_database):
     assert client.post(
         f'/menu-items/{menu_id}',
         data={
+            'csrf_token': 'test-csrf-token',
             'code': 'BURGER001', 'name': 'Updated Burger',
             'item_type': 'Prep Screen Item', 'category_id': str(menu_category_id),
             'selling_price': '60.00', 'active': '1',
@@ -226,17 +241,19 @@ def test_menu_item_screens_render(menu_database):
     ).status_code == 200
     assert client.post(
         f'/menu-items/{menu_id}/recipe',
-        data={'item_type': 'Stock Item', 'stock_item_id': str(stock_id), 'quantity': '0.5'},
+        data={'csrf_token': 'test-csrf-token', 'item_type': 'Stock Item',
+              'stock_item_id': str(stock_id), 'quantity': '0.5'},
         follow_redirects=True,
     ).status_code == 200
     assert client.post(
-        '/settings/menu-categories', data={'name': 'Hot Drinks'},
+        '/settings/menu-categories', data={'csrf_token': 'test-csrf-token', 'name': 'Hot Drinks'},
         follow_redirects=True,
     ).status_code == 200
+    set_tenant_context(company_id, user_id)
     assert get_menu_item(menu_id)['name'] == 'Updated Burger'
     import_response = client.post(
         '/menu-items/import',
-        data={'csv_file': (BytesIO(
+        data={'csrf_token': 'test-csrf-token', 'csv_file': (BytesIO(
             b'Code,Name,Type,Category,Selling Price,Active\n'
             b'DRINK001,Cola,Ordinary Type,Beverages,18.50,Yes\n'
         ), 'menu.csv')},
@@ -245,5 +262,55 @@ def test_menu_item_screens_render(menu_database):
     )
     assert import_response.status_code == 200
     assert b'Imported 1 menu items successfully.' in import_response.data
+    set_tenant_context(company_id, user_id)
     assert b'Ordinary Type' in client.get('/menu-items').data
     assert b'Ordinary Type' in client.get('/menu-items/export.csv').data
+
+
+def test_company_data_isolation_and_company_scoped_codes(menu_database):
+    first_user, first_stock_category, first_menu_category = menu_database
+    first_company = db.current_company_id()
+    second = register_company(
+        'Another Company', 'owner2@example.test',
+        'another-test-password-123', 'another-test-password-123',
+    )
+    conn = db.get_db_connection()
+    second_stock_category = conn.execute(
+        "SELECT id FROM categories WHERE company_id = ? AND name = 'Prepared Foods'",
+        (second['company_id'],),
+    ).fetchone()['id']
+    second_menu_category = conn.execute(
+        "SELECT id FROM menu_categories WHERE company_id = ? AND name = 'Food'",
+        (second['company_id'],),
+    ).fetchone()['id']
+    conn.close()
+
+    set_tenant_context(second['company_id'], second['id'])
+    second_stock = create_stock_item(
+        'SHARED001', 'Shared Code Stock', 'each', '5',
+        second_stock_category, second['id'], '1.00',
+    )
+    second_menu = create_menu_item(
+        'SHARED001', 'Shared Code Menu', 'Ordinary Menu Item',
+        second_menu_category, '10.00', second['id'],
+    )
+
+    set_tenant_context(first_company, first_user)
+    first_stock = create_stock_item(
+        'SHARED001', 'First Company Stock', 'each', '5',
+        first_stock_category, first_user, '1.00',
+    )
+    first_menu = create_menu_item(
+        'SHARED001', 'First Company Menu', 'Ordinary Menu Item',
+        first_menu_category, '10.00', first_user,
+    )
+    with pytest.raises(ValueError, match='existing inventory item'):
+        save_menu_recipe_line(first_menu, 'Stock Item', second_stock, '1', first_user)
+    assert get_menu_item(second_menu) is None
+    assert all(item['id'] != second_stock for item in list_stock_items())
+    assert get_menu_item(first_menu)['name'] == 'First Company Menu'
+
+    set_tenant_context(second['company_id'], second['id'])
+    assert get_menu_item(first_menu) is None
+    assert get_menu_item(second_menu)['name'] == 'Shared Code Menu'
+    assert any(item['id'] == second_stock for item in list_stock_items())

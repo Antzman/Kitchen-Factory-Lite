@@ -44,12 +44,37 @@
     </div>
 </section>
 {% endfor %}
+{% if user['role'] == 'Company Administrator' %}
 <div class="settings-group settings-extra">
     <div class="settings-group-heading"><h2>Users</h2><p class="muted">Manage the people who can use Kitchen Factory and keep access up to date.</p></div>
     <article class="setting-card"><div class="setting-card-copy"><h3>User access</h3><p>Add users, update their details, or deactivate access without removing their history.</p></div><div class="setting-control"><a class="secondary-btn" href="{{ url_for('users') }}">Manage Users</a></div></article>
 </div>
+{% endif %}
 <button type="submit" class="primary-btn settings-save">Save Settings</button>
 </form>
+{% if user['role'] == 'Company Administrator' %}
+<section class="settings-group settings-extra">
+    <div class="settings-group-heading">
+        <h2>Email Settings</h2>
+        <p class="muted">Configure company email delivery. SMTP passwords are encrypted in the local database.</p>
+    </div>
+    <form method="post" action="{{ url_for('save_email_settings') }}" class="grid-form">
+        <label>SMTP Server<input name="smtp_server" value="{{ email_settings['smtp_server'] }}" placeholder="smtp.example.com"></label>
+        <label>SMTP Port<input type="number" name="smtp_port" min="1" max="65535" value="{{ email_settings['smtp_port'] or '587' }}"></label>
+        <label>SMTP Username<input name="smtp_username" value="{{ email_settings['smtp_username'] }}" autocomplete="username"></label>
+        <label>SMTP Password
+            <input type="password" name="smtp_password" autocomplete="new-password"
+                   placeholder="{{ 'Saved; leave blank to keep it' if email_settings['smtp_password_configured'] else 'Leave blank if SMTP does not require authentication' }}">
+        </label>
+        {% if email_settings['smtp_password_configured'] %}
+        <label class="setting-toggle"><input type="checkbox" name="clear_smtp_password" value="1"> Clear saved SMTP password</label>
+        {% endif %}
+        <label>Sender Email Address<input type="email" name="sender_email" value="{{ email_settings['sender_email'] }}" placeholder="kitchen@example.com"></label>
+        <label>Sender Display Name<input name="sender_display_name" value="{{ email_settings['sender_display_name'] }}" placeholder="Kitchen Factory Lite"></label>
+        <button class="primary-btn" type="submit">Save Email Settings</button>
+    </form>
+</section>
+{% endif %}
 <div class="card"><h2>Stock Categories</h2><p class="muted">Keep the category list tidy so stock items are easy to find.</p><a class="secondary-btn" href="{{ url_for('categories') }}">Manage categories</a></div>
 <div class="card"><h2>Menu Categories</h2><p class="muted">Manage categories used by the Menu Items module.</p><a class="secondary-btn" href="{{ url_for('menu_categories') }}">Manage menu categories</a></div>
 {% endblock %}

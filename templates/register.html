@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+{% block title %}Register Company - Kitchen Factory{% endblock %}
+{% block body_class %}login-page{% endblock %}
+{% block content %}
+<div class="login-layout">
+    <div class="login-branding"><img src="{{ url_for('static', filename='images/login-hero.png') }}" alt="Kitchen Factory hospitality kitchen calculator"></div>
+    <section class="login-card">
+        <div class="login-card-heading"><span class="login-eyebrow">Kitchen Factory</span><h1>Register your company</h1><p>Create a private company workspace.</p></div>
+        <form method="post" class="login-form">
+            <label>Company Name<input name="company_name" autocomplete="organization" required></label>
+            <label>Email Address<input type="email" name="email" autocomplete="email" required></label>
+            <label>Password<input type="password" name="password" autocomplete="new-password" minlength="12" required></label>
+            <label>Confirm Password<input type="password" name="confirm_password" autocomplete="new-password" minlength="12" required></label>
+            <button type="submit" class="primary-btn">Create Company Account</button>
+        </form>
+        <p class="login-help">Already registered? <a href="{{ url_for('login') }}">Sign in</a>.</p>
+    </section>
+</div>
+{% endblock %}

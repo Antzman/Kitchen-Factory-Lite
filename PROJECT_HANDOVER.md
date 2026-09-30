@@ -11,8 +11,8 @@ known limitations, and operating instructions.
 
 Kitchen Factory is a hospitality kitchen application for stock control,
 manufacturing, portioning, yield management, food costing, and operational
-review. It uses one shared stock-item database for raw materials, manufactured
-items, and portioned items.
+review. Each company uses one stock-item database for raw materials,
+manufactured items, and portioned items.
 
 The application is an operational kitchen tool, not a full ERP or accounting
 system. It supports:
@@ -72,26 +72,42 @@ The About page is `/about` and displays version 1.0.0, technology choices,
 application purpose, and author information. Authentication currently protects
 it like other non-login application routes.
 
-## 4. Login and User Management
+## 4. Authentication and Company Isolation
 
-Login is username-only:
+New installations have no shared demo login. A company registers at `/register`
+with a company name, email, and password; registration creates its first
+Company Administrator. New accounts must verify their email before sign-in.
+Verification tokens are random, stored as hashes, expire after 24 hours, and
+are invalidated after verification or resend. Login uses email and password,
+with Werkzeug password hashes stored in SQLite. Passwords must be at least 12
+characters. Forgot-password tokens are random, stored as hashes, expire after
+one hour, and become unusable after one reset. New user accounts created by a
+Company Administrator also require email verification. Existing password-
+bearing accounts are migrated as verified to preserve access.
 
-1. A user enters a username.
-2. The application checks that the user exists and is active.
-3. The username is stored in the Flask session.
-4. Authenticated routes become available.
+Transactional messages are handled by `email_service.py`, which separates
+verification and password-reset logic from the SMTP transport. Local
+development without SMTP prints links to the console and exposes them on the
+testing pages. SMTP settings can be company-configured under Settings; the SMTP
+password is Fernet-encrypted with the application secret key. Production can
+use `KITCHEN_FACTORY_EMAIL_PROVIDER=smtp` and SMTP environment variables, plus
+`KITCHEN_FACTORY_PUBLIC_URL` for canonical links. Delivery attempts and
+verification events are recorded in company audit history and
+`email_delivery_log`.
 
-There are no passwords, MFA, password resets, or external identity providers.
-Users can be added, edited, activated, and deactivated from `/users`, which is
-linked from the Settings page. Physical deletion is intentionally avoided so
-historical records remain attributable. Roles are stored as text but are not
-currently enforced for authorization.
+Every business table is tagged with a company ID. Service queries and writes
+scope stock, categories, menu items and recipes, manufacturing, portioning,
+reports, settings, and audit records to the authenticated company. Composite
+unique indexes allow different companies to reuse category names and stock or
+menu codes. Company Administrators can create, edit, disable, reactivate, and
+reset passwords for users in their company; active roles are Company
+Administrator, Manager, and User. A request CSRF token is required for form
+submissions.
 
-Seeded users on an empty database are:
-
-- `admin` - System Admin - Administrator
-- `manager` - Kitchen Manager - Manager
-- `user` - Kitchen User - User
+Existing databases are migrated additively. If legacy business data exists
+without a company, the first registration claims a one-time legacy workspace;
+legacy user accounts are disabled and the first registered user becomes its
+Company Administrator. Existing stock and menu history is preserved.
 
 ## 5. Stock Item Logic
 
@@ -144,8 +160,8 @@ Workflow:
 
 Manufacturing output selection is restricted to Manufactured Item stock types,
 and the service layer enforces the same rule for direct requests. Ingredient
-selection continues to use the shared stock-item database and is not narrowed
-by type.
+selection continues to use the company's stock-item database and is not
+narrowed by type.
 
 Calculations:
 
@@ -175,7 +191,7 @@ Source and destination must differ, must exist, and must use the same unit.
 The source is reduced and the destination is increased during normal mode.
 The destination selector and server-side validation only allow stock items
 whose type is **Portioned Item**. Source selection remains available across the
-shared stock-item database.
+company's stock-item database.
 
 ### Yield Loss
 
@@ -345,9 +361,20 @@ stock dataset. XLSX uses `openpyxl`; PDF uses `reportlab`.
 SQLite is stored in `kitchen_factory.db`. `init_db()` in `db.py` creates the
 schema and performs lightweight migrations. Current tables are:
 
+- `companies`
+- `company_settings`
+- `password_reset_tokens`
 - `categories`
 - `users`
 - `stock_items`
+- `menu_categories`
+- `menu_items`
+- `menu_item_recipe_lines`
+- `menu_item_modifier_groups`
+- `menu_item_modifiers`
+- `menu_item_audit`
+- `menu_item_inventory_transactions`
+- `menu_item_inventory_lines`
 - `manufacturing_transactions`
 - `manufacturing_ingredients`
 - `portioning_sessions`
@@ -355,6 +382,11 @@ schema and performs lightweight migrations. Current tables are:
 - `system_settings`
 - `audit_log`
 - `stock_movements`
+
+Company-owned business tables include `company_id`; category names and stock
+and menu codes are unique within a company. Existing tables receive additive
+columns, while the legacy globally-unique category/code tables are rebuilt
+transactionally to replace global uniqueness with company-scoped indexes.
 
 Important relationships:
 
@@ -415,8 +447,10 @@ Kitchen Factory/
 Implemented:
 
 - Flask application factory and SQLite bootstrap.
-- Session-based username login.
-- Shared stock-item database.
+- Company registration, email/password authentication, and password reset.
+- Company-scoped stock, menu, manufacturing, portioning, reports, settings, and audit data.
+- Company Administrator user management and CSRF-protected form submissions.
+- Additive migration of existing single-company databases.
 - Stock CRUD, notes, types, categories, cost per unit, and total cost.
 - Active/inactive status with saved-note requirement.
 - CSV stock import.
@@ -436,14 +470,16 @@ Implemented:
 - About page with version and technology information.
 - CSV, XLSX, PDF, and print support for the Stock Item Report.
 
-The automated suite currently contains three calculation-focused tests. Manual
-route smoke tests have been used for the major application pages.
+Automated tests cover authentication, password reset, legacy migration,
+company-scoped duplicate codes, menu recipes and transactions, manufacturing,
+portioning, and calculation behavior.
 
 ## 16. Known Issues
 
-1. Authentication is not production-ready: no passwords, MFA, password reset,
-   secure identity integration, or robust session configuration.
-2. Stored roles are not enforced as route permissions.
+1. No MFA, email delivery, rate limiting, or external identity provider is
+   configured; password reset links are displayed locally for testing.
+2. Only Company Administrator access to user management is enforced; finer
+   Manager/User permissions are reserved for a later permissions layer.
 3. Manufacturing expected output is retained in the schema but is not a
    separate current UI input.
 4. Ingredient/output units must match exactly; there is no conversion policy.
@@ -454,14 +490,16 @@ route smoke tests have been used for the major application pages.
    report routes.
 9. Audit entries do not contain immutable before/after field snapshots.
 10. Database migrations are lightweight and not versioned.
-11. The Flask secret key is hard-coded.
+11. SQLite remains the active database. The schema is company-oriented, but a
+    PostgreSQL migration would still require replacing SQLite-specific query and
+    initialization behavior.
 12. SQLite connection handling has no pooling or explicit concurrency strategy.
 13. Browser summaries are advisory; the server recalculates and validates.
 
 ## 17. Future Improvements
 
-1. Add password-based or organization identity authentication.
-2. Enforce role permissions.
+1. Add email delivery and rate limiting for password-reset requests.
+2. Enforce granular Manager/User permissions.
 3. Add versioned migrations and backup/restore procedures.
 4. Separate expected and actual manufacturing output in the UI.
 5. Implement the remaining report hub reports and date/user filters.
@@ -534,14 +572,15 @@ python -m pip install -r requirements.txt
 python app.py
 ```
 
-Open:
+On first use, open the registration page and create the company administrator.
+On later use, sign in with the registered email and password:
 
 ```text
-http://127.0.0.1:5000/login
+http://127.0.0.1:5000/register
 ```
 
-Seeded usernames are `admin`, `manager`, and `user`; there are currently no
-passwords.
+Register a company and its first Company Administrator at `/register`; no
+shared demo credentials are created.
 
 For non-technical Windows distribution, build and run
 `release/KitchenFactorySetup.exe`. The installed application stores its

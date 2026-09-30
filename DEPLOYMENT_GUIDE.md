@@ -92,14 +92,18 @@ prompt, Python installation, or Flask configuration is required.
 
 ## Database behavior
 
-On first launch, the application:
+On first launch, the application creates
+`%LOCALAPPDATA%\Kitchen Factory\kitchen_factory.db` for installed builds,
+initializes the schema, and applies non-destructive migrations. There are no
+shared demo accounts. Register the company and first Company Administrator at
+`/register`; each company receives its own stock categories, Menu Categories
+(`Food` and `Beverages`), and settings.
 
-- Creates `%LOCALAPPDATA%\Kitchen Factory\kitchen_factory.db`.
-- Initializes all tables and migrations.
-- Seeds the default categories.
-- Seeds the default users: `admin`, `manager`, and `user`.
-- Seeds default system settings.
-- Displays a first-run welcome message on the login screen.
+When an older database contains data but no company, it is assigned to a
+one-time legacy workspace. The first company registration claims that workspace
+so the existing records are retained and available to the new administrator.
+Existing legacy user accounts are disabled; create new company users after
+registration.
 
 Installed builds store the database in the user's writable profile rather than
 under `Program Files`. This avoids requiring administrator permissions for
@@ -113,6 +117,52 @@ Factory and copy the database to:
 ```text
 %LOCALAPPDATA%\Kitchen Factory\kitchen_factory.db
 ```
+
+The application continues to support `python app.py` and local access at
+`http://127.0.0.1:5000`. It uses SQLite without requiring Render or another
+cloud service. For an HTTPS deployment, set `KITCHEN_FACTORY_COOKIE_SECURE=1`;
+local HTTP testing leaves this disabled so the browser can send its session
+cookie.
+
+Company users should create passwords of at least 12 characters. Forgot
+Password displays a one-hour, single-use reset link in the browser for local
+testing; do not expose that page or reset link to untrusted users in a
+production deployment until email delivery is configured.
+
+New company registrations and newly created users must verify their email
+address before signing in. Verification links expire after 24 hours and can be
+used once. For local development with no SMTP configuration, links are printed
+to the application console; registration and resend screens also show the link
+for testing. Existing password-bearing accounts are retained as verified when
+the new fields are migrated, so the update does not lock out existing users.
+Changing a managed user's email address requires verification of the new
+address. Configure SMTP to send actual email. The Forgot Password workflow
+uses the same email service and retains its one-hour, single-use token.
+
+Company Administrators can configure SMTP under **Settings → Email Settings**.
+The SMTP password is encrypted in the company-scoped SQLite settings table
+using the application secret key and is never rendered back into the settings
+form. Preserve the secret across restarts and deployments: set a stable
+`KITCHEN_FACTORY_SECRET_KEY` value containing at least 32 characters. Rotating
+the secret makes saved SMTP passwords unreadable; save the password again
+after changing the key. Use a deployment secret store for the secret key and
+environment-based SMTP credentials rather than committing either to source
+control.
+
+For Render or another HTTPS host, configure
+`KITCHEN_FACTORY_EMAIL_PROVIDER=smtp`, `KITCHEN_FACTORY_ENV=production`, and
+the SMTP values `KITCHEN_FACTORY_SMTP_SERVER`, `KITCHEN_FACTORY_SMTP_PORT`,
+`KITCHEN_FACTORY_SMTP_USERNAME`, `KITCHEN_FACTORY_SMTP_PASSWORD`,
+`KITCHEN_FACTORY_SENDER_EMAIL`, and optionally
+`KITCHEN_FACTORY_SENDER_NAME`. Set `KITCHEN_FACTORY_PUBLIC_URL` to the public
+HTTPS origin (for example, `https://kitchen.example.com`) so verification and
+password-reset links use the deployed host behind a proxy. Environment credentials override the
+company-specific SMTP settings. Ensure the public URL and HTTPS host are
+configured correctly so generated verification links point to the deployed
+application. With SMTP unavailable in production, the app records the failed
+delivery and asks the user to request another verification email; it never
+shows a verification or password-reset link to an end user. Local runs without
+SMTP continue to work fully offline.
 
 Make a backup before replacing or migrating a database.
 
@@ -202,7 +252,11 @@ Delete `.venv`, `build`, and `dist`, recreate the virtual environment, install
 - [ ] Browser opens automatically.
 - [ ] Login page opens at `/login`.
 - [ ] First-run database is created.
-- [ ] Default users `admin`, `manager`, and `user` can log in.
+- [ ] A new company can register and its administrator can log in with email and password.
+- [ ] A password reset link expires and cannot be reused.
+- [ ] A second company cannot view or modify the first company's records.
+- [ ] Existing database records survive migration and are assigned to the legacy workspace.
+- [ ] User management is available only to Company Administrators.
 - [ ] Stock Item Database works.
 - [ ] Manufacturing System works.
 - [ ] Portioning System works.

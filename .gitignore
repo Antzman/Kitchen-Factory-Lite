@@ -17,6 +17,7 @@ release/
 
 # Database files
 *.db
+.kitchen_factory_secret
 
 # Log files
 *.log

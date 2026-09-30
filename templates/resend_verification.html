@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% block title %}Resend Verification Email - Kitchen Factory{% endblock %}
+{% block body_class %}login-page{% endblock %}
+{% block content %}
+<div class="login-layout">
+    <section class="login-card">
+        <div class="login-card-heading">
+            <span class="login-eyebrow">Kitchen Factory Lite</span>
+            <h1>Resend Verification Email</h1>
+            <p>Enter the email address used to register your company.</p>
+        </div>
+        <form method="post" class="login-form">
+            <label>Email Address<input type="email" name="email" autocomplete="email" required autofocus></label>
+            <button type="submit" class="primary-btn">Resend Verification Email</button>
+        </form>
+        {% if verification_link %}
+        <div class="login-welcome" role="status">
+            <strong>Local testing verification link</strong>
+            <a href="{{ verification_link }}">{{ verification_link }}</a>
+        </div>
+        {% endif %}
+        <p class="login-help"><a href="{{ url_for('login') }}">Back to sign in</a></p>
+    </section>
+</div>
+{% endblock %}

@@ -7,25 +7,23 @@
         <img src="{{ url_for('static', filename='images/login-hero.png') }}" alt="Kitchen Factory hospitality kitchen calculator">
     </div>
     <section class="login-card" aria-labelledby="login-heading">
-        {% if first_run %}
-        <div class="login-welcome" role="status">
-            <strong>Welcome to Kitchen Factory</strong>
-            <span>Database created successfully.</span>
-            <span>Default users: admin, manager, user</span>
-        </div>
-        {% endif %}
         <div class="login-card-heading">
             <span class="login-eyebrow">Kitchen Factory</span>
             <h1 id="login-heading">Welcome back</h1>
-            <p>Sign in to continue to your kitchen workspace.</p>
+            <p>Sign in to your company's kitchen workspace.</p>
         </div>
         <form method="post" class="login-form">
-            <label for="username">Username
-                <input id="username" type="text" name="username" autocomplete="username" required autofocus>
+            <label for="email">Email Address
+                <input id="email" type="email" name="email" autocomplete="username" required autofocus>
+            </label>
+            <label for="password">Password
+                <input id="password" type="password" name="password" autocomplete="current-password" required>
             </label>
             <button type="submit" class="primary-btn">Sign in</button>
         </form>
-        <p class="login-help">Use your Kitchen Factory username to access the application.</p>
+        <p class="login-help"><a href="{{ url_for('forgot_password') }}">Forgot password?</a></p>
+        <p class="login-help"><a href="{{ url_for('resend_verification') }}">Resend verification email</a></p>
+        <p class="login-help">New to Kitchen Factory? <a href="{{ url_for('register') }}">Register your company</a>.</p>
     </section>
 </div>
 {% endblock %}
