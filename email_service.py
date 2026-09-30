@@ -73,7 +73,7 @@ class SMTPEmailProvider:
                 client.send_message(message)
             return EmailSendResult('sent', self.mode)
         except (smtplib.SMTPException, OSError, ssl.SSLError, ValueError) as exc:
-            logger.error('SMTP email delivery failed (%s).', type(exc).__name__)
+            logger.exception("SMTP email delivery failed")
             return EmailSendResult('failed', self.mode, type(exc).__name__)
 
 
