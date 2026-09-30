@@ -74,6 +74,13 @@ class ResendEmailProvider:
 
 def _provider():
     api_key = os.environ.get('RESEND_API_KEY', '').strip()
+
+    logger.info(
+        "RESEND_API_KEY present: %s, starts with: %s",
+        bool(api_key),
+        api_key[:6] if api_key else "NONE"
+    )
+
     if api_key:
         return ResendEmailProvider(api_key)
     production = (
