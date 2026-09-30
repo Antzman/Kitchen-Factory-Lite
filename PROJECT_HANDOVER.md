@@ -85,15 +85,14 @@ one hour, and become unusable after one reset. New user accounts created by a
 Company Administrator also require email verification. Existing password-
 bearing accounts are migrated as verified to preserve access.
 
-Transactional messages are handled by `email_service.py`, which separates
-verification and password-reset logic from the SMTP transport. Local
-development without SMTP prints links to the console and exposes them on the
-testing pages. SMTP settings can be company-configured under Settings; the SMTP
-password is Fernet-encrypted with the application secret key. Production can
-use `KITCHEN_FACTORY_EMAIL_PROVIDER=smtp` and SMTP environment variables, plus
-`KITCHEN_FACTORY_PUBLIC_URL` for canonical links. Delivery attempts and
-verification events are recorded in company audit history and
-`email_delivery_log`.
+Transactional messages are handled by `email_service.py` through the Resend
+REST API over HTTPS. Configure `RESEND_API_KEY` in the deployment environment;
+messages are sent from `onboarding@resend.dev`. Local development without a
+Resend key prints links to the console and exposes them on testing pages.
+`KITCHEN_FACTORY_PUBLIC_URL` can set the canonical public host for generated
+links. Delivery attempts and verification events are recorded in company
+audit history and `email_delivery_log`. Delivery failures do not roll back
+registration; full errors and failed verification URLs are written to logs.
 
 Every business table is tagged with a company ID. Service queries and writes
 scope stock, categories, menu items and recipes, manufacturing, portioning,

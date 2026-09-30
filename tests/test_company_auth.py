@@ -16,8 +16,6 @@ from services import (
     reset_password,
     update_user,
     verify_email_token,
-    get_email_settings,
-    update_email_settings,
 )
 from werkzeug.security import check_password_hash
 
@@ -321,18 +319,17 @@ def test_existing_password_accounts_migrate_as_verified(tmp_path, monkeypatch):
 
 
 def test_production_registration_logs_email_failure_without_showing_link(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, caplog,
 ):
     monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'production-email.db')
     monkeypatch.setenv('KITCHEN_FACTORY_ENV', 'production')
-    monkeypatch.setenv('KITCHEN_FACTORY_EMAIL_PROVIDER', 'smtp')
-    monkeypatch.setenv('KITCHEN_FACTORY_SMTP_SERVER', 'smtp.example.test')
-    monkeypatch.setenv('KITCHEN_FACTORY_SENDER_EMAIL', 'noreply@example.test')
+    monkeypatch.setenv('RESEND_API_KEY', 'test-resend-api-key')
 
-    def fail_connect(*args, **kwargs):
-        raise OSError('SMTP server is unavailable.')
+    def fail_request(*args, **kwargs):
+        import requests
+        raise requests.ConnectionError('Resend API is unavailable.')
 
-    monkeypatch.setattr('email_service.smtplib.SMTP', fail_connect)
+    monkeypatch.setattr('email_service.requests.post', fail_request)
     from app import create_app
 
     application = create_app()
@@ -355,6 +352,11 @@ def test_production_registration_logs_email_failure_without_showing_link(
 
     assert b'could not send the verification email' in response.data
     assert b'Verification link:' not in response.data
+    verification_url = re.search(
+        r'https?://[^\s]+/verify-email/[A-Za-z0-9_-]+', caplog.text,
+    )
+    assert verification_url
+    assert 'Resend API is unavailable.' in caplog.text
     conn = db.get_db_connection()
     try:
         delivery = conn.execute(
@@ -366,7 +368,7 @@ def test_production_registration_logs_email_failure_without_showing_link(
             )
         }
         assert delivery['status'] == 'failed'
-        assert delivery['error_type'] == 'OSError'
+        assert delivery['error_type'] == 'ConnectionError'
         assert 'VERIFICATION EMAIL FAILED' in actions
     finally:
         conn.close()
@@ -618,33 +620,3 @@ def test_resend_replaces_previous_verification_token(tmp_path, monkeypatch):
     assert new_token and new_token != old_token
     assert verify_email_token(old_token)[0] == 'invalid'
     assert verify_email_token(new_token) == ('verified', user['id'])
-
-
-def test_email_settings_encrypt_smtp_password(tmp_path, monkeypatch):
-    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'email-settings-test.db')
-    db.init_db()
-    user = register_company(
-        'Mail Kitchen', 'mail@example.test',
-        'mail-settings-password-123', 'mail-settings-password-123',
-    )
-    update_email_settings({
-        'smtp_server': 'smtp.example.test',
-        'smtp_port': '587',
-        'smtp_username': 'smtp-user',
-        'smtp_password': 'secret-smtp-password',
-        'sender_email': 'noreply@example.test',
-        'sender_display_name': 'Kitchen Factory Lite',
-    }, company_id=user['company_id'])
-    settings = get_email_settings(user['company_id'])
-    assert settings['smtp_password'] == 'secret-smtp-password'
-    assert settings['smtp_password_configured']
-    conn = db.get_db_connection()
-    try:
-        stored = conn.execute(
-            """SELECT value FROM company_settings
-               WHERE company_id = ? AND key = 'email_smtp_password'""",
-            (user['company_id'],),
-        ).fetchone()['value']
-        assert stored != 'secret-smtp-password'
-    finally:
-        conn.close()

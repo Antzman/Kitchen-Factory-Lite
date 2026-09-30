@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import base64
 import io
 import json
 import re
@@ -11,9 +10,7 @@ from hashlib import sha256
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from cryptography.fernet import Fernet
-
-from db import current_company_id, current_user_id, get_db_connection, get_secret_key
+from db import current_company_id, current_user_id, get_db_connection
 from settings import SETTING_CHOICES, SETTING_DEFAULTS, setting_bool, setting_int, setting_value
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -27,17 +24,6 @@ STOCK_CATEGORIES = (
     'Confectionery', 'Frozen Goods', 'Prepared Foods', 'Beverages', 'Other',
 )
 logger = logging.getLogger(__name__)
-
-
-def _smtp_password_cipher():
-    key = sha256(get_secret_key().encode('utf-8')).digest()
-    return Fernet(base64.urlsafe_b64encode(key))
-
-
-EMAIL_SETTING_KEYS = (
-    'smtp_server', 'smtp_port', 'smtp_username', 'smtp_password',
-    'sender_email', 'sender_display_name',
-)
 
 
 def _tenant_id(company_id=None):
@@ -339,80 +325,6 @@ def record_email_delivery(company_id, user_id, message_type, recipient, status,
             conn, company_id, user_id, action, user_id or recipient,
             f'{message_type.replace("_", " ").title()} email delivery status: {status}.',
         )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def get_email_settings(company_id=None):
-    company_id = _tenant_id(company_id)
-    conn = get_db_connection()
-    try:
-        rows = conn.execute(
-            'SELECT key, value FROM company_settings WHERE company_id = ? AND key LIKE "email_%"',
-            (company_id,),
-        ).fetchall()
-        values = {row['key']: row['value'] for row in rows}
-    finally:
-        conn.close()
-    encrypted_password = values.get('email_smtp_password', '')
-    password_configured = bool(encrypted_password)
-    password = (
-        _smtp_password_cipher().decrypt(encrypted_password.encode('ascii')).decode('utf-8')
-        if encrypted_password else ''
-    )
-    return {
-        'smtp_server': values.get('email_smtp_server', ''),
-        'smtp_port': values.get('email_smtp_port', '587'),
-        'smtp_username': values.get('email_smtp_username', ''),
-        'smtp_password': password,
-        'smtp_password_configured': password_configured,
-        'sender_email': values.get('email_sender_email', ''),
-        'sender_display_name': values.get('email_sender_display_name', 'Kitchen Factory Lite'),
-    }
-
-
-def update_email_settings(values, company_id=None):
-    company_id = _tenant_id(company_id)
-    server = (values.get('smtp_server') or '').strip()
-    port_text = (values.get('smtp_port') or '587').strip()
-    sender = (values.get('sender_email') or '').strip()
-    if port_text:
-        try:
-            port = int(port_text)
-        except ValueError as exc:
-            raise ValueError('SMTP port must be a number between 1 and 65535.') from exc
-        if not 1 <= port <= 65535:
-            raise ValueError('SMTP port must be a number between 1 and 65535.')
-    else:
-        port = 587
-    if sender and not _valid_email(sender):
-        raise ValueError('Enter a valid sender email address.')
-    if bool(server) != bool(sender):
-        raise ValueError('SMTP Server and Sender Email Address are both required to enable email delivery.')
-    data = {
-        'email_smtp_server': server,
-        'email_smtp_port': str(port),
-        'email_smtp_username': (values.get('smtp_username') or '').strip(),
-        'email_sender_email': sender,
-        'email_sender_display_name': (values.get('sender_display_name') or '').strip()
-        or 'Kitchen Factory Lite',
-    }
-    password = values.get('smtp_password') or ''
-    if password:
-        data['email_smtp_password'] = _smtp_password_cipher().encrypt(
-            password.encode('utf-8')
-        ).decode('ascii')
-    if values.get('clear_smtp_password'):
-        data['email_smtp_password'] = ''
-    conn = get_db_connection()
-    try:
-        for key, value in data.items():
-            conn.execute(
-                '''INSERT INTO company_settings(company_id, key, value) VALUES (?, ?, ?)
-                   ON CONFLICT(company_id, key) DO UPDATE SET value = excluded.value''',
-                (company_id, key, value),
-            )
         conn.commit()
     finally:
         conn.close()

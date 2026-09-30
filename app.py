@@ -36,11 +36,9 @@ from services import (
     register_company,
     create_password_reset_token,
     create_email_verification_token,
-    get_email_settings,
     record_email_delivery,
     reset_password,
     unverified_login_account,
-    update_email_settings,
     verify_email_token,
     get_settings,
     get_setting,
@@ -102,9 +100,8 @@ def create_app():
 
     def deliver_verification_email(user, token, resent=False):
         verification_link = public_url('verify_email', token=token)
-        email_configuration = get_email_settings(user['company_id'])
         result = send_verification_email(
-            user['email'], verification_link, email_configuration,
+            user['email'], verification_link,
         )
         record_email_delivery(
             user['company_id'], user['id'], 'verification', user['email'],
@@ -218,7 +215,7 @@ def create_app():
             if token and user:
                 reset_link = public_url('reset_password_view', token=token)
                 delivery = send_password_reset_email(
-                    user['email'], reset_link, get_email_settings(user['company_id']),
+                    user['email'], reset_link,
                 )
                 record_email_delivery(
                     user['company_id'], user['id'], 'password_reset', user['email'],
@@ -884,39 +881,7 @@ def create_app():
             allow_negative_stock=values.get('allow_negative_stock') == '1',
             settings=values,
             setting_sections=settings_by_section(values),
-            email_settings={
-                **{
-                    key: value for key, value in get_email_settings(user['company_id']).items()
-                    if key != 'smtp_password'
-                },
-                'smtp_password': '',
-            },
         )
-
-    @app.route('/settings/email', methods=['POST'])
-    def save_email_settings():
-        user = get_user_by_username(session['username'])
-        if user['role'] != 'Company Administrator':
-            flash('Only a Company Administrator can change email settings.', 'error')
-            return redirect(url_for('settings'))
-        try:
-            update_email_settings({
-                'smtp_server': request.form.get('smtp_server', ''),
-                'smtp_port': request.form.get('smtp_port', '587'),
-                'smtp_username': request.form.get('smtp_username', ''),
-                'smtp_password': request.form.get('smtp_password', ''),
-                'clear_smtp_password': request.form.get('clear_smtp_password') == '1',
-                'sender_email': request.form.get('sender_email', ''),
-                'sender_display_name': request.form.get('sender_display_name', ''),
-            })
-            add_audit(
-                user['id'], 'EMAIL SETTINGS UPDATED', 'Settings',
-                'email', 'Updated SMTP email settings.',
-            )
-            flash('Email settings saved.', 'success')
-        except ValueError as exc:
-            flash(str(exc), 'error')
-        return redirect(url_for('settings'))
 
     @app.route('/export-csv')
     def export_csv():

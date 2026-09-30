@@ -1,17 +1,18 @@
-"""Provider-neutral transactional email delivery."""
+"""Transactional email delivery through Resend or the local console."""
 
 from __future__ import annotations
 
 import logging
 import os
-import smtplib
-import ssl
 from dataclasses import dataclass
-from email.message import EmailMessage
 from typing import Protocol
+
+import requests
 
 
 logger = logging.getLogger(__name__)
+RESEND_EMAILS_URL = 'https://api.resend.com/emails'
+SENDER = 'Kitchen Factory Lite <onboarding@resend.dev>'
 
 
 @dataclass(frozen=True)
@@ -36,94 +37,63 @@ class ConsoleEmailProvider:
         return EmailSendResult('sent', self.mode)
 
 
-class SMTPEmailProvider:
-    mode = 'smtp'
+class ResendEmailProvider:
+    mode = 'resend'
 
-    def __init__(self, configuration):
-        self.configuration = configuration
+    def __init__(self, api_key: str):
+        self.api_key = api_key
 
     def send(self, recipient: str, subject: str, body: str) -> EmailSendResult:
-        config = self.configuration
-        sender_name = config.get('sender_display_name') or 'Kitchen Factory Lite'
-        sender_email = config['sender_email']
-        message = EmailMessage()
-        message['Subject'] = subject
-        message['From'] = f'{sender_name} <{sender_email}>'
-        message['To'] = recipient
-        message.set_content(body)
-
         try:
-            host = config['smtp_server']
-            port = int(config.get('smtp_port') or 587)
-            if port == 465:
-                client = smtplib.SMTP_SSL(
-                    host, port, timeout=15, context=ssl.create_default_context()
+            response = requests.post(
+                RESEND_EMAILS_URL,
+                headers={
+                    'Authorization': f'Bearer {self.api_key}',
+                    'Content-Type': 'application/json',
+                },
+                json={
+                    'from': SENDER,
+                    'to': [recipient],
+                    'subject': subject,
+                    'text': body,
+                },
+                timeout=15,
+            )
+            if not response.ok:
+                logger.error(
+                    'Resend email delivery failed: HTTP %s: %s',
+                    response.status_code,
+                    response.text,
                 )
-            else:
-                client = smtplib.SMTP(host, port, timeout=15)
-            with client:
-                if port != 465:
-                    client.ehlo()
-                    client.starttls(context=ssl.create_default_context())
-                    client.ehlo()
-                username = config.get('smtp_username') or ''
-                password = config.get('smtp_password') or ''
-                if username:
-                    client.login(username, password)
-                client.send_message(message)
+                return EmailSendResult('failed', self.mode, 'ResendAPIError')
             return EmailSendResult('sent', self.mode)
-        except (smtplib.SMTPException, OSError, ssl.SSLError, ValueError) as exc:
-            logger.exception("SMTP email delivery failed")
+        except requests.RequestException as exc:
+            logger.exception('Resend email delivery failed: %s', exc)
             return EmailSendResult('failed', self.mode, type(exc).__name__)
 
 
-def _configuration_with_environment(configuration):
-    resolved = dict(configuration)
-    environment_names = {
-        'smtp_server': 'KITCHEN_FACTORY_SMTP_SERVER',
-        'smtp_port': 'KITCHEN_FACTORY_SMTP_PORT',
-        'smtp_username': 'KITCHEN_FACTORY_SMTP_USERNAME',
-        'smtp_password': 'KITCHEN_FACTORY_SMTP_PASSWORD',
-        'sender_email': 'KITCHEN_FACTORY_SENDER_EMAIL',
-        'sender_display_name': 'KITCHEN_FACTORY_SENDER_NAME',
-    }
-    for key, environment_name in environment_names.items():
-        configured = os.environ.get(environment_name)
-        if configured:
-            resolved[key] = configured
-    return resolved
-
-
-def _provider(configuration):
-    provider_name = os.environ.get('KITCHEN_FACTORY_EMAIL_PROVIDER', '').strip().lower()
-    resolved = _configuration_with_environment(configuration)
-    smtp_ready = bool(resolved.get('smtp_server') and resolved.get('sender_email'))
+def _provider():
+    api_key = os.environ.get('RESEND_API_KEY', '').strip()
+    if api_key:
+        return ResendEmailProvider(api_key)
     production = (
         os.environ.get('KITCHEN_FACTORY_ENV', '').strip().lower() == 'production'
         or bool(os.environ.get('PORT'))
     )
-
-    if provider_name:
-        if provider_name == 'smtp' and smtp_ready:
-            return SMTPEmailProvider(resolved)
-        logger.error('Email provider "%s" is unsupported or incompletely configured.', provider_name)
-        return None, 'not_configured'
-    if smtp_ready:
-        return SMTPEmailProvider(resolved)
     if not production:
         return ConsoleEmailProvider()
-    logger.error('Transactional email delivery is not configured in production.')
-    return None, 'not_configured'
+    logger.error('Resend email delivery is not configured; RESEND_API_KEY is missing.')
+    return None
 
 
-def _send(recipient, subject, body, configuration):
-    provider = _provider(configuration)
-    if isinstance(provider, tuple):
-        return EmailSendResult('failed', provider[1], 'EmailProviderNotConfigured')
+def _send(recipient, subject, body):
+    provider = _provider()
+    if provider is None:
+        return EmailSendResult('failed', 'not_configured', 'ResendAPIKeyMissing')
     return provider.send(recipient, subject, body)
 
 
-def send_verification_email(recipient, verification_link, configuration):
+def send_verification_email(recipient, verification_link):
     body = (
         'Hello,\n\n'
         'Thank you for registering your company with Kitchen Factory Lite.\n\n'
@@ -133,15 +103,17 @@ def send_verification_email(recipient, verification_link, configuration):
         'Regards\n'
         'Kitchen Factory Lite'
     )
-    return _send(
+    result = _send(
         recipient,
         'Kitchen Factory Lite - Verify Your Email Address',
         body,
-        configuration,
     )
+    if result.status == 'failed':
+        logger.error('Verification URL for failed email delivery: %s', verification_link)
+    return result
 
 
-def send_password_reset_email(recipient, reset_link, configuration):
+def send_password_reset_email(recipient, reset_link):
     body = (
         'Hello,\n\n'
         'A password reset was requested for your Kitchen Factory Lite account.\n\n'
@@ -155,5 +127,4 @@ def send_password_reset_email(recipient, reset_link, configuration):
         recipient,
         'Kitchen Factory Lite - Password Reset',
         body,
-        configuration,
     )

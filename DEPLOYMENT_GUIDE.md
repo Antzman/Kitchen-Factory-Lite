@@ -131,38 +131,28 @@ production deployment until email delivery is configured.
 
 New company registrations and newly created users must verify their email
 address before signing in. Verification links expire after 24 hours and can be
-used once. For local development with no SMTP configuration, links are printed
+used once. For local development without `RESEND_API_KEY`, links are printed
 to the application console; registration and resend screens also show the link
 for testing. Existing password-bearing accounts are retained as verified when
 the new fields are migrated, so the update does not lock out existing users.
 Changing a managed user's email address requires verification of the new
-address. Configure SMTP to send actual email. The Forgot Password workflow
+address. Configure Resend to send actual email. The Forgot Password workflow
 uses the same email service and retains its one-hour, single-use token.
 
-Company Administrators can configure SMTP under **Settings → Email Settings**.
-The SMTP password is encrypted in the company-scoped SQLite settings table
-using the application secret key and is never rendered back into the settings
-form. Preserve the secret across restarts and deployments: set a stable
-`KITCHEN_FACTORY_SECRET_KEY` value containing at least 32 characters. Rotating
-the secret makes saved SMTP passwords unreadable; save the password again
-after changing the key. Use a deployment secret store for the secret key and
-environment-based SMTP credentials rather than committing either to source
-control.
-
-For Render or another HTTPS host, configure
-`KITCHEN_FACTORY_EMAIL_PROVIDER=smtp`, `KITCHEN_FACTORY_ENV=production`, and
-the SMTP values `KITCHEN_FACTORY_SMTP_SERVER`, `KITCHEN_FACTORY_SMTP_PORT`,
-`KITCHEN_FACTORY_SMTP_USERNAME`, `KITCHEN_FACTORY_SMTP_PASSWORD`,
-`KITCHEN_FACTORY_SENDER_EMAIL`, and optionally
-`KITCHEN_FACTORY_SENDER_NAME`. Set `KITCHEN_FACTORY_PUBLIC_URL` to the public
+For Render, add `RESEND_API_KEY=<api key>` under the service's Environment
+settings. The application calls the Resend REST API over HTTPS and sends from
+`onboarding@resend.dev`. Set `KITCHEN_FACTORY_PUBLIC_URL` to the deployed
 HTTPS origin (for example, `https://kitchen.example.com`) so verification and
-password-reset links use the deployed host behind a proxy. Environment credentials override the
-company-specific SMTP settings. Ensure the public URL and HTTPS host are
-configured correctly so generated verification links point to the deployed
-application. With SMTP unavailable in production, the app records the failed
-delivery and asks the user to request another verification email; it never
-shows a verification or password-reset link to an end user. Local runs without
-SMTP continue to work fully offline.
+password-reset links use the public host. Keep API keys in Render's environment
+settings or another secret store; never commit them to source control.
+
+If Resend rejects a message or is unavailable, the full delivery error is
+logged, and verification URLs are included in application logs to allow
+administrative recovery. The company account remains created, email delivery
+is recorded as failed, and the user is prompted to request another
+verification email. Production pages do not expose verification or reset
+links. Local runs without a Resend key continue to work offline via the
+console-link fallback.
 
 Make a backup before replacing or migrating a database.
 
