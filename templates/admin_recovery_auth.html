@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card">
+    <h1>Emergency Administrator Recovery</h1>
+    <p>Re-enter your administrator password and the emergency access key to open the recovery tools.</p>
+    <form method="post" class="grid-form" autocomplete="off">
+        <input type="hidden" name="target_user_id" value="{{ user['id'] }}">
+        <input type="hidden" name="action" value="authorize_access">
+        <label>Administrator Password
+            <input type="password" name="administrator_password" required
+                   autocomplete="current-password">
+        </label>
+        <label>Emergency Administrator Access Key
+            <input type="password" name="master_admin_key" required maxlength="2048"
+                   autocomplete="off">
+        </label>
+        <button class="primary-btn">Verify and Open Recovery</button>
+    </form>
+</div>
+{% endblock %}

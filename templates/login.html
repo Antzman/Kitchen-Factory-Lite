@@ -21,8 +21,10 @@
             </label>
             <button type="submit" class="primary-btn">Sign in</button>
         </form>
-        <p class="login-help"><a href="{{ url_for('forgot_password') }}">Forgot password?</a></p>
-        <p class="login-help"><a href="{{ url_for('resend_verification') }}">Resend verification email</a></p>
+        <div class="login-help support-notice">
+            <strong>Need help logging in or resetting your password?</strong>
+            <span>Email: <a href="mailto:pumbaskitchenapp@gmail.com">pumbaskitchenapp@gmail.com</a></span>
+        </div>
         <p class="login-help">New to Kitchen Factory? <a href="{{ url_for('register') }}">Register your company</a>.</p>
     </section>
 </div>

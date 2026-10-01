@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import hmac
 import io
 import json
+import os
 import re
 import secrets
 import logging
@@ -64,7 +66,7 @@ def _record_security_audit(conn, company_id, user_id, action, record_id, descrip
     )
 
 
-def register_company(company_name, email, password, confirmation):
+def register_company(company_name, email, password, confirmation=None):
     company_name = (company_name or '').strip()
     email = (email or '').strip().casefold()
     if not company_name:
@@ -72,9 +74,7 @@ def register_company(company_name, email, password, confirmation):
     if not _valid_email(email):
         raise ValueError('Enter a valid email address.')
     _validate_password(password)
-    if not confirmation:
-        raise ValueError('Password confirmation is required.')
-    if password != confirmation:
+    if confirmation is not None and password != confirmation:
         raise ValueError('Passwords do not match.')
 
     conn = get_db_connection()
@@ -129,18 +129,14 @@ def register_company(company_name, email, password, confirmation):
                    VALUES (?, ?, ?)''',
                 (company_id, key, value),
             )
-        verification_token = secrets.token_urlsafe(32)
-        token_hash = sha256(verification_token.encode('utf-8')).hexdigest()
-        verification_expiry = (
-            datetime.utcnow().replace(microsecond=0) + timedelta(hours=24)
-        ).isoformat()
         user_id = conn.execute(
             '''INSERT INTO users
                (company_id, username, email, password_hash, display_name, role, active,
-                date_created, email_verified, verification_token, verification_token_expiry)
-               VALUES (?, ?, ?, ?, ?, 'Company Administrator', 1, ?, 0, ?, ?)''',
+                date_created, email_verified, verified_at, verification_token,
+                verification_token_expiry, must_change_password)
+               VALUES (?, ?, ?, ?, ?, 'Company Administrator', 1, ?, 1, ?, NULL, NULL, 0)''',
             (company_id, f'{company_id}:{email}', email, generate_password_hash(password),
-             company_name, now, token_hash, verification_expiry),
+             company_name, now, now),
         ).lastrowid
         _record_security_audit(
             conn, company_id, user_id, 'COMPANY REGISTERED', company_id,
@@ -151,10 +147,7 @@ def register_company(company_name, email, password, confirmation):
             f'Company Administrator account created for {email}.',
         )
         conn.commit()
-        return {
-            **dict(get_user_by_id(user_id)),
-            'verification_token': verification_token,
-        }
+        return dict(get_user_by_id(user_id))
     except Exception:
         conn.rollback()
         raise
@@ -192,13 +185,190 @@ def get_user_by_email(email):
 
 def authenticate_user(email, password):
     user = get_user_by_email(email)
-    if not user or not user['active'] or not user['company_active'] or not user['password_hash']:
+    if (
+        not user or not user['active'] or not user['company_active']
+        or not user['password_hash'] or user['account_locked']
+    ):
         return None
     if not check_password_hash(user['password_hash'], password or ''):
         return None
-    if not user['email_verified']:
-        return None
     return user
+
+
+def emergency_admin_recovery(
+    administrator_id, target_user_id, action, administrator_password,
+    master_admin_key, new_password=None, confirmation=None,
+    force_password_change=True,
+):
+    actions = {
+        'reset_password',
+        'unlock_account',
+        'force_password_change',
+        'enable_account',
+        'disable_account',
+        'authorize_access',
+    }
+    audit_action = action if action in actions else 'invalid'
+    company_id = _tenant_id()
+    configured_key = os.environ.get('MASTER_ADMIN_KEY')
+    conn = get_db_connection()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        administrator = conn.execute(
+            '''SELECT id, email, password_hash, role, active
+               FROM users WHERE id = ? AND company_id = ?''',
+            (administrator_id, company_id),
+        ).fetchone()
+        if (
+            not administrator
+            or administrator['role'] != 'Company Administrator'
+            or not administrator['active']
+        ):
+            conn.rollback()
+            raise ValueError('Only an active Company Administrator can use recovery.')
+
+        target = conn.execute(
+            '''SELECT id, email, display_name, role, active
+               FROM users WHERE id = ? AND company_id = ?''',
+            (target_user_id, company_id),
+        ).fetchone()
+        password_valid = bool(
+            administrator['password_hash']
+            and check_password_hash(
+                administrator['password_hash'], administrator_password or '',
+            )
+        )
+        key_valid = bool(
+            configured_key and configured_key.strip() and master_admin_key
+            and hmac.compare_digest(configured_key, master_admin_key)
+        )
+
+        def write_recovery_audit(event, details):
+            target_name = (
+                f'{target["display_name"]} ({target["email"]})'
+                if target else f'user id {target_user_id}'
+            )
+            _record_security_audit(
+                conn, company_id, administrator_id, event, target_user_id,
+                f'Target: {target_name}. Requested action: {audit_action}. {details}',
+            )
+
+        if not (password_valid and key_valid):
+            write_recovery_audit(
+                'EMERGENCY RECOVERY ACCESS DENIED',
+                'Recovery credentials were rejected.',
+            )
+            conn.commit()
+            raise ValueError('Recovery credentials were not accepted.')
+
+        if action not in actions:
+            write_recovery_audit(
+                'EMERGENCY RECOVERY FAILED', 'Unsupported recovery action.',
+            )
+            conn.commit()
+            raise ValueError('Select a valid recovery action.')
+        if not target:
+            write_recovery_audit(
+                'EMERGENCY RECOVERY FAILED',
+                'The target user was not found in this company.',
+            )
+            conn.commit()
+            raise ValueError('User not found in this company.')
+
+        if action == 'authorize_access':
+            if target_user_id != administrator_id:
+                write_recovery_audit(
+                    'EMERGENCY RECOVERY FAILED',
+                    'Recovery access must be authorized against the administrator account.',
+                )
+                conn.commit()
+                raise ValueError('Recovery access could not be authorized.')
+            write_recovery_audit(
+                'EMERGENCY RECOVERY ACCESS GRANTED',
+                'Administrator authorized an emergency recovery session.',
+            )
+            conn.commit()
+            return administrator['email']
+
+        if action == 'reset_password':
+            try:
+                _validate_password(new_password)
+                if not confirmation:
+                    raise ValueError('Password confirmation is required.')
+                if new_password != confirmation:
+                    raise ValueError('Passwords do not match.')
+            except ValueError as exc:
+                write_recovery_audit(
+                    'EMERGENCY RECOVERY FAILED', 'Password reset validation failed.',
+                )
+                conn.commit()
+                raise exc
+            conn.execute(
+                '''UPDATE users SET password_hash = ?, must_change_password = ?
+                   WHERE id = ? AND company_id = ?''',
+                (
+                    generate_password_hash(new_password),
+                    int(bool(force_password_change)), target_user_id, company_id,
+                ),
+            )
+            event = 'EMERGENCY ACCOUNT PASSWORD RESET'
+            details = 'Password reset; password change on next login ' + (
+                'is required.' if force_password_change else 'is not required.'
+            )
+        elif action == 'unlock_account':
+            conn.execute(
+                'UPDATE users SET account_locked = 0 WHERE id = ? AND company_id = ?',
+                (target_user_id, company_id),
+            )
+            event = 'EMERGENCY ACCOUNT UNLOCKED'
+            details = 'Account lock cleared.'
+        elif action == 'force_password_change':
+            conn.execute(
+                'UPDATE users SET must_change_password = 1 WHERE id = ? AND company_id = ?',
+                (target_user_id, company_id),
+            )
+            event = 'EMERGENCY PASSWORD CHANGE REQUIRED'
+            details = 'Password change at next login enabled.'
+        elif action == 'enable_account':
+            conn.execute(
+                'UPDATE users SET active = 1 WHERE id = ? AND company_id = ?',
+                (target_user_id, company_id),
+            )
+            event = 'EMERGENCY ACCOUNT ENABLED'
+            details = 'Account enabled.'
+        else:
+            if target['role'] == 'Company Administrator' and target['active']:
+                remaining_admins = conn.execute(
+                    '''SELECT COUNT(*) FROM users
+                       WHERE company_id = ? AND role = 'Company Administrator'
+                         AND active = 1 AND id != ?''',
+                    (company_id, target_user_id),
+                ).fetchone()[0]
+                if not remaining_admins:
+                    write_recovery_audit(
+                        'EMERGENCY RECOVERY FAILED',
+                        'The last active Company Administrator cannot be disabled.',
+                    )
+                    conn.commit()
+                    raise ValueError(
+                        'The company must retain at least one active administrator.'
+                    )
+            conn.execute(
+                'UPDATE users SET active = 0 WHERE id = ? AND company_id = ?',
+                (target_user_id, company_id),
+            )
+            event = 'EMERGENCY ACCOUNT DISABLED'
+            details = 'Account disabled.'
+
+        write_recovery_audit(event, details)
+        conn.commit()
+        return target['email']
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def unverified_login_account(email, password):
@@ -564,10 +734,11 @@ def create_user(email, display_name, role, password, confirmation, active=True):
         conn.execute('BEGIN IMMEDIATE')
         user_id = conn.execute(
             '''INSERT INTO users
-               (company_id, username, email, password_hash, display_name, role, active, date_created)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+               (company_id, username, email, password_hash, display_name, role, active,
+                date_created, email_verified, verified_at, must_change_password)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0)''',
             (company_id, f'{company_id}:{email}', email, generate_password_hash(password),
-             display_name, role, int(bool(active)), now),
+             display_name, role, int(bool(active)), now, now),
         ).lastrowid
         _record_security_audit(
             conn, company_id, current_user_id(), 'USER CREATED', user_id,
@@ -617,18 +788,14 @@ def update_user(user_id, email, display_name, role, active=True):
                    WHERE user_id = ? AND used_at IS NULL''',
                 (datetime.utcnow().isoformat(timespec='seconds'), user_id),
             )
-        email_changed = current['email'].casefold() != email.casefold()
         conn.execute(
             '''UPDATE users SET username = ?, email = ?, display_name = ?, role = ?, active = ?,
-               email_verified = CASE WHEN ? THEN 0 ELSE email_verified END,
-               verified_at = CASE WHEN ? THEN NULL ELSE verified_at END,
-               verification_token = CASE WHEN ? THEN NULL ELSE verification_token END,
-               verification_token_expiry = CASE WHEN ? THEN NULL
-                   ELSE verification_token_expiry END
+               email_verified = 1,
+               verified_at = ?,
+               verification_token = NULL, verification_token_expiry = NULL
                WHERE id = ? AND company_id = ?''',
             (f'{company_id}:{email}', email, display_name, role, int(bool(active)),
-             int(email_changed), int(email_changed), int(email_changed), int(email_changed),
-             user_id, company_id),
+             datetime.utcnow().isoformat(timespec='seconds'), user_id, company_id),
         )
         if bool(current['active']) != bool(active):
             action = 'USER ACTIVATED' if active else 'USER DISABLED'
@@ -641,7 +808,42 @@ def update_user(user_id, email, display_name, role, active=True):
         conn.close()
 
 
-def administrator_reset_user_password(user_id, password, confirmation):
+def administrator_reset_user_password(user_id):
+    company_id = _tenant_id()
+    temporary_password = secrets.token_urlsafe(24)
+    conn = get_db_connection()
+    try:
+        user = conn.execute(
+            'SELECT email, active FROM users WHERE id = ? AND company_id = ?',
+            (user_id, company_id),
+        ).fetchone()
+        if not user:
+            raise ValueError('User not found.')
+        if not user['active']:
+            raise ValueError('Cannot reset the password of an inactive user.')
+        conn.execute(
+            '''UPDATE password_reset_tokens SET used_at = ?
+               WHERE user_id = ? AND used_at IS NULL''',
+            (datetime.utcnow().isoformat(timespec='seconds'), user_id),
+        )
+        conn.execute(
+            '''UPDATE users SET password_hash = ?, must_change_password = 1,
+               email_verified = 1, verification_token = NULL,
+               verification_token_expiry = NULL
+               WHERE id = ? AND company_id = ?''',
+            (generate_password_hash(temporary_password), user_id, company_id),
+        )
+        _record_security_audit(
+            conn, company_id, current_user_id(), 'PASSWORD RESET', user_id,
+            f'Administrator generated a temporary password for {user["email"]}.',
+        )
+        conn.commit()
+        return temporary_password
+    finally:
+        conn.close()
+
+
+def change_temporary_password(user_id, password, confirmation):
     _validate_password(password)
     if not confirmation:
         raise ValueError('Password confirmation is required.')
@@ -650,26 +852,27 @@ def administrator_reset_user_password(user_id, password, confirmation):
     company_id = _tenant_id()
     conn = get_db_connection()
     try:
+        conn.execute('BEGIN IMMEDIATE')
         user = conn.execute(
-            'SELECT email FROM users WHERE id = ? AND company_id = ?',
+            '''SELECT email FROM users
+               WHERE id = ? AND company_id = ? AND active = 1''',
             (user_id, company_id),
         ).fetchone()
         if not user:
-            raise ValueError('User not found.')
+            raise ValueError('User not found or inactive.')
         conn.execute(
-            '''UPDATE password_reset_tokens SET used_at = ?
-               WHERE user_id = ? AND used_at IS NULL''',
-            (datetime.utcnow().isoformat(timespec='seconds'), user_id),
-        )
-        conn.execute(
-            'UPDATE users SET password_hash = ? WHERE id = ? AND company_id = ?',
+            '''UPDATE users SET password_hash = ?, must_change_password = 0
+               WHERE id = ? AND company_id = ?''',
             (generate_password_hash(password), user_id, company_id),
         )
         _record_security_audit(
-            conn, company_id, current_user_id(), 'PASSWORD RESET', user_id,
-            f'Administrator reset the password for {user["email"]}.',
+            conn, company_id, user_id, 'TEMPORARY PASSWORD CHANGED', user_id,
+            f'{user["email"]} changed their temporary password.',
         )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

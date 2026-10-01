@@ -2,6 +2,9 @@
 {% block content %}
 <div class="card">
     <h1>User Management</h1>
+    {% if recovery_enabled %}
+    <p><a class="secondary-btn" href="{{ url_for('admin_recovery') }}">Emergency Administrator Recovery</a></p>
+    {% endif %}
     <form method="post" class="grid-form">
         <label>Name<input name="display_name" required maxlength="120"></label>
         <label>Email Address<input type="email" name="email" required maxlength="254"></label>
@@ -45,9 +48,7 @@
                             <button class="secondary-btn">Save</button>
                         </form>
                         <form method="post" action="{{ url_for('reset_user_password', user_id=row['id']) }}" class="grid-form">
-                            <label>New Password<input type="password" name="password" required minlength="12" autocomplete="new-password"></label>
-                            <label>Confirm Password<input type="password" name="confirm_password" required minlength="12" autocomplete="new-password"></label>
-                            <button class="secondary-btn">Reset Password</button>
+                            <button class="secondary-btn">Generate Temporary Password</button>
                         </form>
                     </td>
                 </tr>

@@ -1,6 +1,4 @@
 import sqlite3
-import re
-
 import db
 from db import clear_tenant_context, set_tenant_context
 from services import (
@@ -10,6 +8,7 @@ from services import (
     create_manufacturing_transaction,
     create_password_reset_token,
     create_stock_item,
+    get_user_by_id,
     list_manufacturing_history,
     list_recent_portioning,
     register_company,
@@ -31,10 +30,10 @@ def test_registration_password_hash_login_and_single_use_reset(tmp_path, monkeyp
     assert user['role'] == 'Company Administrator'
     assert check_password_hash(user['password_hash'], 'correct-horse-battery-123')
     assert authenticate_user('owner@example.test', 'incorrect-password') is None
-    assert authenticate_user('owner@example.test', 'correct-horse-battery-123') is None
-    assert verify_email_token(user['verification_token']) == ('verified', user['id'])
+    assert user['active'] == 1
+    assert user['email_verified'] == 1
+    assert user['verified_at']
     assert authenticate_user('owner@example.test', 'correct-horse-battery-123')['id'] == user['id']
-    assert verify_email_token(user['verification_token'])[0] == 'invalid'
 
     token = create_password_reset_token('owner@example.test')
     assert token
@@ -78,7 +77,7 @@ def test_registration_password_hash_login_and_single_use_reset(tmp_path, monkeyp
         clear_tenant_context()
 
 
-def test_local_registration_verification_login_and_logout_routes(tmp_path, monkeypatch):
+def test_local_registration_and_admin_temporary_password_flow(tmp_path, monkeypatch):
     monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'web-auth-test.db')
     from app import create_app
 
@@ -97,68 +96,25 @@ def test_local_registration_verification_login_and_logout_routes(tmp_path, monke
             'company_name': 'Local Test Kitchen',
             'email': 'local-owner@example.test',
             'password': 'local-registration-password-123',
-            'confirm_password': 'local-registration-password-123',
         },
         follow_redirects=True,
     )
     assert response.status_code == 200
-    assert b'Company registered. Verify your email address before signing in.' in response.data
-    assert b'Verification link: http://localhost/verify-email/' in response.data
-    initial_token = re.search(
-        rb'/verify-email/([A-Za-z0-9_-]+)', response.data,
-    ).group(1).decode()
-
-    with client.session_transaction() as session:
-        csrf_token = session['csrf_token']
-    resend_response = client.post(
-        '/resend-verification',
-        data={'csrf_token': csrf_token, 'email': 'local-owner@example.test'},
-        follow_redirects=True,
-    )
-    assert b'If an active, unverified account exists' in resend_response.data
-    verification_token = re.search(
-        rb'/verify-email/([A-Za-z0-9_-]+)', resend_response.data,
-    ).group(1).decode()
-    assert verification_token != initial_token
-    assert client.get(f'/verify-email/{initial_token}', follow_redirects=True).status_code == 200
-
-    assert client.get('/login').status_code == 200
-    with client.session_transaction() as session:
-        csrf_token = session['csrf_token']
-    response = client.post(
-        '/login',
-        data={
-            'csrf_token': csrf_token,
-            'email': 'local-owner@example.test',
-            'password': 'local-registration-password-123',
-        },
-        follow_redirects=True,
-    )
-    assert b'Please verify your email address before signing in.' in response.data
-
-    verified_response = client.get(
-        f'/verify-email/{verification_token}', follow_redirects=True,
-    )
-    assert b'Email verified successfully. You can now sign in.' in verified_response.data
-    assert client.get('/dashboard').status_code == 302
-
-    assert client.get('/login').status_code == 200
-    with client.session_transaction() as session:
-        csrf_token = session['csrf_token']
-    response = client.post(
-        '/login',
-        data={
-            'csrf_token': csrf_token,
-            'email': 'local-owner@example.test',
-            'password': 'local-registration-password-123',
-        },
-        follow_redirects=True,
-    )
-    assert response.status_code == 200
-    assert b'Logged in successfully.' in response.data
+    assert b'Company registered successfully. You are now signed in.' in response.data
     assert client.get('/dashboard').status_code == 200
 
+    conn = db.get_db_connection()
+    registered = conn.execute(
+        'SELECT email_verified, active FROM users WHERE email = ?',
+        ('local-owner@example.test',),
+    ).fetchone()
+    conn.close()
+    assert registered['email_verified'] == 1
+    assert registered['active'] == 1
+
     with client.session_transaction() as session:
+        owner_id = session['user_id']
+        company_id = session['company_id']
         csrf_token = session['csrf_token']
     assert client.post('/logout', data={'csrf_token': csrf_token}).status_code == 302
     assert client.get('/dashboard').status_code == 302
@@ -179,8 +135,6 @@ def test_local_registration_verification_login_and_logout_routes(tmp_path, monke
     assert b'Logged in successfully.' in response.data
     assert client.get('/users').status_code == 200
     with client.session_transaction() as session:
-        owner_id = session['user_id']
-        company_id = session['company_id']
         csrf_token = session['csrf_token']
     response = client.post(
         '/users',
@@ -206,19 +160,56 @@ def test_local_registration_verification_login_and_logout_routes(tmp_path, monke
 
     assert client.post(
         f'/users/{manager["id"]}/reset-password',
-        data={
-            'csrf_token': csrf_token,
-            'password': 'manager-reset-password-456',
-            'confirm_password': 'manager-reset-password-456',
-        },
+        data={'csrf_token': csrf_token},
         follow_redirects=True,
     ).status_code == 200
+    import re
+    temporary_password = re.search(
+        rb'Temporary password: ([A-Za-z0-9_-]+)', client.get('/users').data,
+    )
+    assert temporary_password
+    temporary_password = temporary_password.group(1).decode()
+    assert authenticate_user('manager@example.test', temporary_password)['id'] == manager['id']
+    conn = db.get_db_connection()
+    assert conn.execute(
+        'SELECT must_change_password FROM users WHERE id = ?', (manager['id'],)
+    ).fetchone()['must_change_password'] == 1
+    conn.close()
+
     with client.session_transaction() as session:
-        session['user_id'] = manager['id']
-        session['company_id'] = company_id
-        session['username'] = 'manager@example.test'
-        session['csrf_token'] = csrf_token
+        csrf_token = session['csrf_token']
+    client.post('/logout', data={'csrf_token': csrf_token})
+    client.get('/login')
+    with client.session_transaction() as session:
+        csrf_token = session['csrf_token']
+    response = client.post(
+        '/login',
+        data={
+            'csrf_token': csrf_token,
+            'email': 'manager@example.test',
+            'password': temporary_password,
+        },
+        follow_redirects=True,
+    )
+    assert b'Choose a New Password' in response.data
+    assert client.get('/dashboard').status_code == 302
+    with client.session_transaction() as session:
+        csrf_token = session['csrf_token']
+    response = client.post(
+        '/change-password',
+        data={
+            'csrf_token': csrf_token,
+            'password': 'manager-new-password-789',
+            'confirm_password': 'manager-new-password-789',
+        },
+        follow_redirects=True,
+    )
+    assert b'Password updated. You can now continue.' in response.data
+    assert client.get('/dashboard').status_code == 200
+    assert authenticate_user('manager@example.test', temporary_password) is None
+    assert authenticate_user('manager@example.test', 'manager-new-password-789')
     assert client.get('/users').status_code == 302
+
     with client.session_transaction() as session:
         session['user_id'] = owner_id
         session['company_id'] = company_id
@@ -235,7 +226,14 @@ def test_local_registration_verification_login_and_logout_routes(tmp_path, monke
         },
         follow_redirects=True,
     ).status_code == 200
-    assert authenticate_user('manager@example.test', 'manager-reset-password-456') is None
+    conn = db.get_db_connection()
+    actions = {
+        row['action'] for row in conn.execute(
+            "SELECT action FROM audit_log WHERE company_id = ?", (company_id,)
+        )
+    }
+    conn.close()
+    assert {'PASSWORD RESET', 'TEMPORARY PASSWORD CHANGED'} <= actions
 
 
 def test_expired_verification_token_is_invalidated_and_audited(tmp_path, monkeypatch):
@@ -318,18 +316,13 @@ def test_existing_password_accounts_migrate_as_verified(tmp_path, monkeypatch):
         conn.close()
 
 
-def test_production_registration_logs_email_failure_without_showing_link(
+def test_production_registration_no_email_delivery_and_signs_in(
     tmp_path, monkeypatch, caplog,
 ):
     monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'production-email.db')
     monkeypatch.setenv('KITCHEN_FACTORY_ENV', 'production')
-    monkeypatch.setenv('RESEND_API_KEY', 'test-resend-api-key')
+    monkeypatch.delenv('RESEND_API_KEY', raising=False)
 
-    def fail_request(*args, **kwargs):
-        import requests
-        raise requests.ConnectionError('Resend API is unavailable.')
-
-    monkeypatch.setattr('email_service.requests.post', fail_request)
     from app import create_app
 
     application = create_app()
@@ -345,22 +338,20 @@ def test_production_registration_logs_email_failure_without_showing_link(
             'company_name': 'Production Mail Kitchen',
             'email': 'production-mail@example.test',
             'password': 'production-mail-password-123',
-            'confirm_password': 'production-mail-password-123',
         },
         follow_redirects=True,
     )
 
-    assert b'could not send the verification email' in response.data
-    assert b'Verification link:' not in response.data
-    verification_url = re.search(
-        r'https?://[^\s]+/verify-email/[A-Za-z0-9_-]+', caplog.text,
-    )
-    assert verification_url
-    assert 'Resend API is unavailable.' in caplog.text
+    # Registration should sign the user in immediately and not attempt email delivery
+    assert b'Company registered successfully. You are now signed in.' in response.data
     conn = db.get_db_connection()
     try:
         delivery = conn.execute(
-            'SELECT status, error_type FROM email_delivery_log'
+            'SELECT COUNT(*) AS c FROM email_delivery_log'
+        ).fetchone()
+        assert delivery['c'] == 0
+    finally:
+        conn.close()
         ).fetchone()
         actions = {
             row['action'] for row in conn.execute(
@@ -620,3 +611,187 @@ def test_resend_replaces_previous_verification_token(tmp_path, monkeypatch):
     assert new_token and new_token != old_token
     assert verify_email_token(old_token)[0] == 'invalid'
     assert verify_email_token(new_token) == ('verified', user['id'])
+
+
+def test_emergency_admin_recovery_is_scoped_and_audited(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'emergency-recovery.db')
+    monkeypatch.setenv('MASTER_ADMIN_KEY', 'test-master-admin-key-never-a-password')
+    from app import create_app
+    from services import create_user
+
+    application = create_app()
+    application.testing = True
+    client = application.test_client()
+    client.get('/register')
+    with client.session_transaction() as session:
+        csrf_token = session['csrf_token']
+    response = client.post(
+        '/register',
+        data={
+            'csrf_token': csrf_token,
+            'company_name': 'Emergency Recovery Kitchen',
+            'email': 'recovery-admin@example.test',
+            'password': 'recovery-admin-password-123',
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    with client.session_transaction() as session:
+        administrator_id = session['user_id']
+        company_id = session['company_id']
+        csrf_token = session['csrf_token']
+
+    set_tenant_context(company_id, administrator_id)
+    target_id = create_user(
+        'recover-target@example.test', 'Recovery Target', 'User',
+        'target-initial-password-123', 'target-initial-password-123',
+    )
+    conn = db.get_db_connection()
+    conn.execute('UPDATE users SET account_locked = 1 WHERE id = ?', (target_id,))
+    conn.commit()
+    conn.close()
+    assert authenticate_user('recover-target@example.test', 'target-initial-password-123') is None
+
+    page = client.get('/admin-recovery')
+    assert page.status_code == 200
+    assert b'test-master-admin-key-never-a-password' not in page.data
+    assert b'type="password" name="master_admin_key"' in page.data
+
+    response = client.post(
+        '/admin-recovery',
+        data={
+            'csrf_token': csrf_token,
+            'target_user_id': str(target_id),
+            'action': 'unlock_account',
+            'administrator_password': 'recovery-admin-password-123',
+            'master_admin_key': 'wrong-master-key',
+        },
+        follow_redirects=True,
+    )
+    assert b'Recovery credentials were not accepted.' in response.data
+    conn = db.get_db_connection()
+    assert conn.execute(
+        'SELECT account_locked FROM users WHERE id = ?', (target_id,),
+    ).fetchone()['account_locked'] == 1
+    conn.close()
+
+    recovery_form = {
+        'csrf_token': csrf_token,
+        'target_user_id': str(target_id),
+        'administrator_password': 'recovery-admin-password-123',
+        'master_admin_key': 'test-master-admin-key-never-a-password',
+    }
+    response = client.post(
+        '/admin-recovery',
+        data={
+            **recovery_form,
+            'target_user_id': str(administrator_id),
+            'action': 'authorize_access',
+        },
+        follow_redirects=True,
+    )
+    assert b'Emergency recovery access granted' in response.data
+    page = client.get('/admin-recovery')
+    assert page.status_code == 200
+    assert b'test-master-admin-key-never-a-password' not in page.data
+
+    response = client.post(
+        '/admin-recovery',
+        data={**recovery_form, 'action': 'unlock_account'},
+        follow_redirects=True,
+    )
+    assert b'Recovery action completed' in response.data
+    conn = db.get_db_connection()
+    assert conn.execute(
+        'SELECT account_locked FROM users WHERE id = ?', (target_id,),
+    ).fetchone()['account_locked'] == 0
+    conn.close()
+
+    response = client.post(
+        '/admin-recovery',
+        data={
+            **recovery_form,
+            'action': 'reset_password',
+            'new_password': 'recovered-password-456',
+            'confirm_password': 'recovered-password-456',
+            'force_password_change': '1',
+        },
+        follow_redirects=True,
+    )
+    assert b'Recovery action completed' in response.data
+    assert authenticate_user(
+        'recover-target@example.test', 'recovered-password-456',
+    )['id'] == target_id
+    conn = db.get_db_connection()
+    assert conn.execute(
+        'SELECT must_change_password FROM users WHERE id = ?', (target_id,),
+    ).fetchone()['must_change_password'] == 1
+    conn.close()
+
+    client.post(
+        '/admin-recovery',
+        data={**recovery_form, 'action': 'force_password_change'},
+    )
+    client.post(
+        '/admin-recovery',
+        data={**recovery_form, 'action': 'disable_account'},
+    )
+    assert authenticate_user('recover-target@example.test', 'recovered-password-456') is None
+    client.post(
+        '/admin-recovery',
+        data={**recovery_form, 'action': 'enable_account'},
+    )
+    assert authenticate_user(
+        'recover-target@example.test', 'recovered-password-456',
+    )['id'] == target_id
+
+    other_company_admin = register_company(
+        'Isolated Recovery Kitchen', 'isolated-admin@example.test',
+        'isolated-admin-password-123',
+    )
+    response = client.post(
+        '/admin-recovery',
+        data={
+            **recovery_form,
+            'target_user_id': str(other_company_admin['id']),
+            'action': 'disable_account',
+        },
+        follow_redirects=True,
+    )
+    assert b'User not found in this company.' in response.data
+    assert get_user_by_id(other_company_admin['id'])['active'] == 1
+
+    conn = db.get_db_connection()
+    recovery_audits = conn.execute(
+        '''SELECT user_id, record_id, action, created_at, description
+           FROM audit_log WHERE company_id = ? AND module = 'Authentication'
+             AND (action LIKE 'EMERGENCY RECOVERY%'
+                  OR action LIKE 'EMERGENCY ACCOUNT%'
+                  OR action LIKE 'EMERGENCY PASSWORD%')''',
+        (company_id,),
+    ).fetchall()
+    conn.close()
+    assert recovery_audits
+    assert all(row['user_id'] == administrator_id for row in recovery_audits)
+    assert all(row['created_at'] for row in recovery_audits)
+    assert all('Target:' in row['description'] for row in recovery_audits)
+    assert {row['action'] for row in recovery_audits} >= {
+        'EMERGENCY RECOVERY ACCESS DENIED',
+        'EMERGENCY RECOVERY ACCESS GRANTED',
+        'EMERGENCY ACCOUNT UNLOCKED',
+        'EMERGENCY ACCOUNT PASSWORD RESET',
+        'EMERGENCY RECOVERY FAILED',
+    }
+
+    monkeypatch.delenv('MASTER_ADMIN_KEY')
+    assert client.get('/admin-recovery').status_code == 404
+    assert client.post(
+        '/login',
+        data={
+            'csrf_token': csrf_token,
+            'email': 'recovery-admin@example.test',
+            'password': 'test-master-admin-key-never-a-password',
+        },
+        follow_redirects=True,
+    ).data.find(b'Logged in successfully.') == -1
+    clear_tenant_context()

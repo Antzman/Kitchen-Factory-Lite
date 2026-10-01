@@ -5,12 +5,11 @@ import hmac
 import io
 import os
 import secrets
+import time
 from datetime import datetime
 from decimal import Decimal
-from urllib.parse import urljoin
 
 from flask import Flask, flash, redirect, render_template, request, session, url_for
-from email_service import send_password_reset_email, send_verification_email
 
 from db import (
     clear_tenant_context,
@@ -31,15 +30,9 @@ from services import (
     dashboard_metrics,
     get_user_by_username,
     get_user_by_id,
-    get_user_by_email,
     authenticate_user,
     register_company,
-    create_password_reset_token,
-    create_email_verification_token,
-    record_email_delivery,
-    reset_password,
-    unverified_login_account,
-    verify_email_token,
+    change_temporary_password,
     get_settings,
     get_setting,
     import_stock_items,
@@ -58,6 +51,7 @@ from services import (
     create_user,
     update_user,
     administrator_reset_user_password,
+    emergency_admin_recovery,
     update_category,
     set_category_active,
     list_menu_categories,
@@ -80,6 +74,15 @@ from services import (
 )
 from settings import settings_by_section
 
+PASSWORD_SUPPORT_MESSAGE = (
+    'Need help logging in or resetting your password? '
+    'Please email: pumbaskitchenapp@gmail.com'
+)
+
+
+def emergency_recovery_enabled():
+    return bool(os.environ.get('MASTER_ADMIN_KEY', '').strip())
+
 
 def create_app():
     app = Flask(__name__)
@@ -97,24 +100,6 @@ def create_app():
     first_run = init_db()
     seed_data()
     app.config['FIRST_RUN'] = first_run
-
-    def deliver_verification_email(user, token, resent=False):
-        verification_link = public_url('verify_email', token=token)
-        result = send_verification_email(
-            user['email'], verification_link,
-        )
-        record_email_delivery(
-            user['company_id'], user['id'], 'verification', user['email'],
-            result.status, result.error_type, resent=resent,
-        )
-        return verification_link, result
-
-    def public_url(endpoint, **values):
-        path = url_for(endpoint, **values)
-        public_base = os.environ.get('KITCHEN_FACTORY_PUBLIC_URL', '').strip()
-        if public_base:
-            return urljoin(f'{public_base.rstrip("/")}/', path.lstrip('/'))
-        return url_for(endpoint, _external=True, **values)
 
     @app.context_processor
     def inject_settings():
@@ -141,10 +126,14 @@ def create_app():
         user = get_user_by_id(session.get('user_id'))
         if (
             not user or not user['active'] or not user['company_active']
-            or not user['email_verified']
+            or user['account_locked']
         ):
             session.clear()
             return redirect(url_for('login'))
+        if user['must_change_password'] and request.endpoint not in {
+            'change_password', 'logout', 'static',
+        }:
+            return redirect(url_for('change_password'))
         g_user = dict(user)
         request.environ['kitchen_factory_user'] = g_user
         set_tenant_context(user['company_id'], user['id'])
@@ -163,16 +152,14 @@ def create_app():
                 session['user_id'] = user['id']
                 session['company_id'] = user['company_id']
                 session['username'] = user['email']
+                session['must_change_password'] = bool(user['must_change_password'])
                 session.permanent = True
                 set_tenant_context(user['company_id'], user['id'])
+                if user['must_change_password']:
+                    flash('Sign in with a temporary password. Choose a new password to continue.', 'success')
+                    return redirect(url_for('change_password'))
                 flash('Logged in successfully.', 'success')
                 return redirect(url_for('dashboard'))
-            unverified_user = unverified_login_account(
-                email, request.form.get('password', ''),
-            )
-            if unverified_user:
-                flash('Please verify your email address before signing in.', 'error')
-                return redirect(url_for('login'))
             flash('Invalid email address or password.', 'error')
         return render_template('login.html')
 
@@ -184,100 +171,58 @@ def create_app():
                     request.form.get('company_name', ''),
                     request.form.get('email', ''),
                     request.form.get('password', ''),
-                    request.form.get('confirm_password', ''),
                 )
-                verification_link, delivery = deliver_verification_email(
-                    user, user['verification_token'],
-                )
-                flash(
-                    'Company registered. Verify your email address before signing in.',
-                    'success',
-                )
-                if delivery.mode == 'console' and delivery.status == 'sent':
-                    flash(f'Verification link: {verification_link}', 'success')
-                elif delivery.status == 'failed':
-                    flash(
-                        'We could not send the verification email. You can request another link.',
-                        'error',
-                    )
-                return redirect(url_for('login'))
+                session.clear()
+                session['user_id'] = user['id']
+                session['company_id'] = user['company_id']
+                session['username'] = user['email']
+                session.permanent = True
+                set_tenant_context(user['company_id'], user['id'])
+                flash('Company registered successfully. You are now signed in.', 'success')
+                return redirect(url_for('dashboard'))
             except ValueError as exc:
                 flash(str(exc), 'error')
         return render_template('register.html')
 
     @app.route('/forgot-password', methods=['GET', 'POST'])
     def forgot_password():
-        reset_url = None
-        if request.method == 'POST':
-            token = create_password_reset_token(request.form.get('email', ''))
-            user = get_user_by_email(request.form.get('email', '')) if token else None
-            delivery = None
-            if token and user:
-                reset_link = public_url('reset_password_view', token=token)
-                delivery = send_password_reset_email(
-                    user['email'], reset_link,
-                )
-                record_email_delivery(
-                    user['company_id'], user['id'], 'password_reset', user['email'],
-                    delivery.status, delivery.error_type,
-                )
-            flash(
-                'If an active account exists for that email address, password reset instructions have been sent.',
-                'success',
-            )
-            if delivery and delivery.mode == 'console' and delivery.status == 'sent':
-                reset_url = public_url('reset_password_view', token=token)
-        return render_template('forgot_password.html', reset_url=reset_url)
+        flash(PASSWORD_SUPPORT_MESSAGE, 'info')
+        return redirect(url_for('login'))
 
     @app.route('/verify-email/<token>')
     def verify_email(token):
-        status, _user_id = verify_email_token(token)
-        if status == 'verified':
-            flash('Email verified successfully. You can now sign in.', 'success')
-        elif status == 'expired':
-            flash('This verification link has expired. Request a new verification email.', 'error')
-        elif status == 'used':
-            flash('This email address has already been verified. You can sign in.', 'success')
-        else:
-            flash('This verification link is invalid. Request a new verification email.', 'error')
+        del token
+        flash('Email verification is no longer required. You can sign in.', 'success')
         return redirect(url_for('login'))
 
     @app.route('/resend-verification', methods=['GET', 'POST'])
     def resend_verification():
-        verification_link = None
-        if request.method == 'POST':
-            email = request.form.get('email', '').strip()
-            user = get_user_by_email(email)
-            if user and user['active'] and user['company_active'] and not user['email_verified']:
-                token = create_email_verification_token(user['id'])
-                if token:
-                    verification_link, delivery = deliver_verification_email(
-                        user, token, resent=True,
-                    )
-                    if delivery.mode != 'console' or delivery.status != 'sent':
-                        verification_link = None
-            flash(
-                'If an active, unverified account exists for that email address, '
-                'a verification email has been sent.',
-                'success',
-            )
-        return render_template(
-            'resend_verification.html', verification_link=verification_link,
-        )
+        flash('Email verification is no longer required. You can sign in.', 'success')
+        return redirect(url_for('login'))
 
     @app.route('/reset-password/<token>', methods=['GET', 'POST'])
     def reset_password_view(token):
+        del token
+        flash(PASSWORD_SUPPORT_MESSAGE, 'info')
+        return redirect(url_for('login'))
+
+    @app.route('/change-password', methods=['GET', 'POST'])
+    def change_password():
+        user_id = session.get('user_id')
+        if not user_id:
+            return redirect(url_for('login'))
         if request.method == 'POST':
             try:
-                reset_password(
-                    token, request.form.get('password', ''),
+                change_temporary_password(
+                    user_id, request.form.get('password', ''),
                     request.form.get('confirm_password', ''),
                 )
-                flash('Password updated. You can now sign in.', 'success')
-                return redirect(url_for('login'))
+                session['must_change_password'] = False
+                flash('Password updated. You can now continue.', 'success')
+                return redirect(url_for('dashboard'))
             except ValueError as exc:
                 flash(str(exc), 'error')
-        return render_template('reset_password.html', token=token)
+        return render_template('change_password.html')
 
     @app.route('/logout', methods=['POST'])
     def logout():
@@ -813,31 +758,95 @@ def create_app():
                         request.form.get('active') == '1',
                     )
                     action = 'USER CREATED'
-                managed_user = get_user_by_id(int(user_id))
-                if (
-                    managed_user and managed_user['active']
-                    and not managed_user['email_verified']
-                ):
-                    verification_token = create_email_verification_token(managed_user['id'])
-                    if verification_token:
-                        verification_link, delivery = deliver_verification_email(
-                            managed_user, verification_token,
-                        )
-                        if delivery.mode == 'console' and delivery.status == 'sent':
-                            flash(f'Verification link: {verification_link}', 'success')
-                        elif delivery.status == 'failed':
-                            flash(
-                                'User saved, but the verification email could not be sent. '
-                                'They can request another link.',
-                                'error',
-                            )
                 add_audit(user['id'], action, 'Users', user_id, 'User administration change')
                 flash('User saved.', 'success')
             except (TypeError, ValueError) as exc:
                 flash(str(exc), 'error')
             return redirect(url_for('users'))
-        rows = list_users()
-        return render_template('users.html', user=user, users=rows)
+        return render_template(
+            'users.html', user=user, users=list_users(),
+            recovery_enabled=emergency_recovery_enabled(),
+        )
+
+    @app.route('/admin-recovery', methods=['GET', 'POST'])
+    def admin_recovery():
+        if not emergency_recovery_enabled():
+            return app.make_response(('Not found', 404))
+        administrator = get_user_by_username(session['username'])
+        if administrator['role'] != 'Company Administrator':
+            flash('Only a Company Administrator can access recovery.', 'error')
+            return redirect(url_for('dashboard'))
+        recovery_active = session.get('admin_recovery_until', 0) > time.time()
+        if request.method == 'POST':
+            action = request.form.get('action', '')
+            try:
+                try:
+                    target_user_id = int(request.form.get('target_user_id', ''))
+                except (TypeError, ValueError):
+                    try:
+                        emergency_admin_recovery(
+                            administrator['id'], 0, 'invalid_access_attempt',
+                            request.form.get('administrator_password', ''),
+                            request.form.get('master_admin_key', ''),
+                        )
+                    except ValueError:
+                        pass
+                    raise ValueError('Select a valid target user.')
+                if action != 'authorize_access' and not recovery_active:
+                    try:
+                        emergency_admin_recovery(
+                            administrator['id'], target_user_id,
+                            'invalid_access_attempt',
+                            request.form.get('administrator_password', ''),
+                            request.form.get('master_admin_key', ''),
+                        )
+                    except ValueError:
+                        pass
+                    raise ValueError(
+                        'Verify your administrator password and recovery key to open recovery.'
+                    )
+                target_email = emergency_admin_recovery(
+                    administrator['id'],
+                    target_user_id,
+                    action,
+                    request.form.get('administrator_password', ''),
+                    request.form.get('master_admin_key', ''),
+                    request.form.get('new_password'),
+                    request.form.get('confirm_password'),
+                    request.form.get('force_password_change') == '1',
+                )
+                if action == 'authorize_access':
+                    session['admin_recovery_until'] = time.time() + 300
+                    flash(
+                        'Emergency recovery access granted for five minutes.',
+                        'success',
+                    )
+                else:
+                    flash(
+                        f'Recovery action completed for {target_email}. '
+                        'The action was recorded in the audit log.',
+                        'success',
+                    )
+            except (TypeError, ValueError) as exc:
+                flash(str(exc), 'error')
+            return redirect(url_for('admin_recovery'))
+        if not recovery_active:
+            return render_template(
+                'admin_recovery_auth.html', user=administrator,
+            )
+        conn = get_db_connection()
+        try:
+            recovery_users = conn.execute(
+                '''SELECT id, email, display_name, role, active, account_locked,
+                          must_change_password
+                   FROM users WHERE company_id = ? ORDER BY display_name''',
+                (administrator['company_id'],),
+            ).fetchall()
+        finally:
+            conn.close()
+        return render_template(
+            'admin_recovery.html', user=administrator, users=recovery_users,
+        )
 
     @app.route('/users/<int:user_id>/reset-password', methods=['POST'])
     def reset_user_password(user_id):
@@ -846,11 +855,12 @@ def create_app():
             flash('Only a Company Administrator can reset user passwords.', 'error')
             return redirect(url_for('dashboard'))
         try:
-            administrator_reset_user_password(
-                user_id, request.form.get('password', ''),
-                request.form.get('confirm_password', ''),
+            temporary_password = administrator_reset_user_password(user_id)
+            flash(
+                f'Temporary password: {temporary_password}. '
+                'Share it securely; it will only be shown once.',
+                'warning',
             )
-            flash('User password reset successfully.', 'success')
         except ValueError as exc:
             flash(str(exc), 'error')
         return redirect(url_for('users'))

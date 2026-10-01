@@ -1,0 +1,61 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card">
+    <h1>Emergency Administrator Recovery</h1>
+    <p>
+        Each recovery action requires your current administrator password and
+        the emergency key configured by the deployment operator. Credentials
+        are checked for this request only and are never saved.
+    </p>
+    <p class="muted">
+        Recovery actions are limited to users in your company and are recorded
+        in the audit log. The key is not shown or retained.
+    </p>
+</div>
+
+<div class="card">
+    <form method="post" class="grid-form" autocomplete="off">
+        <label>Target User
+            <select name="target_user_id" required>
+                {% for row in users %}
+                <option value="{{ row['id'] }}">
+                    {{ row['display_name'] }} ({{ row['email'] }}) —
+                    {{ row['role'] }}; {{ 'Active' if row['active'] else 'Disabled' }};
+                    {{ 'Locked' if row['account_locked'] else 'Unlocked' }}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>Recovery Action
+            <select name="action" required>
+                <option value="reset_password">Reset password</option>
+                <option value="unlock_account">Unlock account</option>
+                <option value="force_password_change">Force password change on next login</option>
+                <option value="enable_account">Enable account</option>
+                <option value="disable_account">Disable account</option>
+            </select>
+        </label>
+        <label>New Password (required for password reset)
+            <input type="password" name="new_password" minlength="12"
+                   maxlength="1024" autocomplete="new-password">
+        </label>
+        <label>Confirm New Password
+            <input type="password" name="confirm_password" minlength="12"
+                   maxlength="1024" autocomplete="new-password">
+        </label>
+        <label class="setting-toggle">
+            <input type="checkbox" name="force_password_change" value="1" checked>
+            Require password change at next login after reset
+        </label>
+        <label>Administrator Password
+            <input type="password" name="administrator_password" required
+                   autocomplete="current-password">
+        </label>
+        <label>Emergency Administrator Access Key
+            <input type="password" name="master_admin_key" required maxlength="2048"
+                   autocomplete="off">
+        </label>
+        <button class="primary-btn">Perform Recovery Action</button>
+    </form>
+</div>
+{% endblock %}

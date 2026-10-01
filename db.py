@@ -242,6 +242,8 @@ def _migrate_company_auth(conn):
     _ensure_column(conn, 'users', 'verification_token', 'TEXT')
     _ensure_column(conn, 'users', 'verification_token_expiry', 'TEXT')
     _ensure_column(conn, 'users', 'verified_at', 'TEXT')
+    _ensure_column(conn, 'users', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0')
+    _ensure_column(conn, 'users', 'account_locked', 'INTEGER NOT NULL DEFAULT 0')
     _ensure_column(conn, 'audit_log', 'company_name', "TEXT NOT NULL DEFAULT ''")
     if verification_columns_missing:
         conn.execute(

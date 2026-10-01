@@ -124,35 +124,53 @@ cloud service. For an HTTPS deployment, set `KITCHEN_FACTORY_COOKIE_SECURE=1`;
 local HTTP testing leaves this disabled so the browser can send its session
 cookie.
 
-Company users should create passwords of at least 12 characters. Forgot
-Password displays a one-hour, single-use reset link in the browser for local
-testing; do not expose that page or reset link to untrusted users in a
-production deployment until email delivery is configured.
+Company users should create passwords of at least 12 characters. The application currently disables email verification and user-facing
+password-reset-by-email flows. To recover access, users should contact the
+support address shown in the login page and footer: `pumbaskitchenapp@gmail.com`.
 
-New company registrations and newly created users must verify their email
-address before signing in. Verification links expire after 24 hours and can be
-used once. For local development without `RESEND_API_KEY`, links are printed
-to the application console; registration and resend screens also show the link
-for testing. Existing password-bearing accounts are retained as verified when
-the new fields are migrated, so the update does not lock out existing users.
-Changing a managed user's email address requires verification of the new
-address. Configure Resend to send actual email. The Forgot Password workflow
-uses the same email service and retains its one-hour, single-use token.
+Company registrations create active accounts immediately and sign the
+registrant in. An administrator can generate a temporary password for any
+user from the Users management screen; the temporary password must be
+changed by the user at first login. All administrator-generated password
+resets are recorded in the audit log.
 
-For Render, add `RESEND_API_KEY=<api key>` under the service's Environment
-settings. The application calls the Resend REST API over HTTPS and sends from
-`onboarding@resend.dev`. Set `KITCHEN_FACTORY_PUBLIC_URL` to the deployed
-HTTPS origin (for example, `https://kitchen.example.com`) so verification and
-password-reset links use the public host. Keep API keys in Render's environment
-settings or another secret store; never commit them to source control.
+The database retains the verification- and reset-related fields (verification
+tokens, expiry, and delivery log) so the email workflows can be re-enabled
+later if desired. To restore email delivery, reintroduce an email provider
+implementation and update the deployment environment with the provider's API
+key or SMTP settings.
 
-If Resend rejects a message or is unavailable, the full delivery error is
-logged, and verification URLs are included in application logs to allow
-administrative recovery. The company account remains created, email delivery
-is recorded as failed, and the user is prompted to request another
-verification email. Production pages do not expose verification or reset
-links. Local runs without a Resend key continue to work offline via the
-console-link fallback.
+For Render deployments in which email delivery is re-enabled, provide the
+appropriate provider configuration (for example `RESEND_API_KEY=<api key>`)
+in the service's Environment settings and secure API keys in the platform's
+secrets manager. Do not commit API keys or SMTP credentials to source control.
+
+Local development continues to work without any external email provider; the
+application still runs at `http://127.0.0.1:5000` and uses SQLite for data
+storage.
+
+## Emergency Administrator Recovery
+
+The emergency recovery page is available to an authenticated Company
+Administrator at **Settings → Users → Emergency Administrator Recovery** only
+when `MASTER_ADMIN_KEY` is configured. Set this variable in Render's
+Environment settings and keep its value in the platform's secret storage; do
+not add it to source control. If it is unset, the recovery feature is disabled.
+
+Each recovery operation requires the administrator's current account password
+and the master key. The key is only compared with the environment value; it is
+never used as a login password, saved in the database, placed in the session,
+or displayed back in the page. Opening the recovery tools requires both
+credentials and grants a five-minute session; each operation also rechecks
+both credentials. Operations can reset a user's password, unlock
+an account, require a password change at next login, and enable or disable an
+account. User targets are scoped to the administrator's company, and each
+attempt and successful action is recorded in that company's audit log with the
+administrator, target, action, and timestamp. Account password hashes continue
+to use the application's existing Werkzeug hashing.
+
+For local testing, set `MASTER_ADMIN_KEY` in the environment before starting
+`python app.py`. Do not reuse a production key in development.
 
 Make a backup before replacing or migrating a database.
 
