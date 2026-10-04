@@ -8,6 +8,7 @@
 <section class="card">
     <h2>Add Category</h2>
     <form method="post" class="grid-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>Category Name<input name="name" required maxlength="80"></label>
         <button class="primary-btn" type="submit">Add Category</button>
     </form>
@@ -19,14 +20,16 @@
         <tbody>
         {% for category in categories %}
             <tr class="{% if not category['active'] %}inactive-row{% endif %}">
-                <td><form method="post" action="{{ url_for('edit_menu_category', category_id=category['id']) }}" class="inline-form"><input name="name" value="{{ category['name'] }}" required><button class="secondary-btn" type="submit">Save</button></form></td>
+                <td><form method="post" action="{{ url_for('edit_menu_category', category_id=category['id']) }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input name="name" value="{{ category['name'] }}" required><button class="secondary-btn" type="submit">Save</button></form></td>
                 <td>{{ 'Active' if category['active'] else 'Inactive' }}</td>
                 <td class="menu-actions">
                     <form method="post" action="{{ url_for('menu_category_status', category_id=category['id']) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <input type="hidden" name="active" value="{{ 0 if category['active'] else 1 }}">
                         <button class="secondary-btn" type="submit">{{ 'Deactivate' if category['active'] else 'Activate' }}</button>
                     </form>
                     <form method="post" action="{{ url_for('remove_menu_category', category_id=category['id']) }}" onsubmit="return confirm('Delete category {{ category['name'] }}?');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <button class="text-button" type="submit">Delete</button>
                     </form>
                 </td>

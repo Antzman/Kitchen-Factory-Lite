@@ -15,6 +15,7 @@
 
 <div class="card">
     <form method="post" class="grid-form" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>Target User
             <select name="target_user_id" required>
                 {% for row in users %}

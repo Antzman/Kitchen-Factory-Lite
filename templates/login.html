@@ -13,6 +13,7 @@
             <p>Sign in to your company's kitchen workspace.</p>
         </div>
         <form method="post" class="login-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label for="email">Email Address
                 <input id="email" type="email" name="email" autocomplete="username" required autofocus>
             </label>

@@ -4,6 +4,7 @@
     <h1>Emergency Administrator Recovery</h1>
     <p>Re-enter your administrator password and the emergency access key to open the recovery tools.</p>
     <form method="post" class="grid-form" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="target_user_id" value="{{ user['id'] }}">
         <input type="hidden" name="action" value="authorize_access">
         <label>Administrator Password

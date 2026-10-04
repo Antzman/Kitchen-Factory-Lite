@@ -21,6 +21,7 @@
                 <a class="{% if request.endpoint in ['settings', 'users', 'categories', 'menu_categories', 'edit_menu_category', 'menu_category_status', 'remove_menu_category'] %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a>
                 <a class="{% if request.endpoint == 'about' %}active{% endif %}" href="{{ url_for('about') }}">About</a>
                 <form method="post" action="{{ url_for('logout') }}" class="nav-logout">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button type="submit" class="nav-link">Logout</button>
                 </form>
             </nav>
@@ -43,18 +44,5 @@
             </footer>
         </main>
     </div>
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('form[method="post" i]').forEach((form) => {
-    if (!form.querySelector('input[name="csrf_token"]')) {
-      const token = document.createElement('input');
-      token.type = 'hidden';
-      token.name = 'csrf_token';
-      token.value = {{ csrf_token|tojson }};
-      form.appendChild(token);
-    }
-  });
-});
-</script>
 </body>
 </html>

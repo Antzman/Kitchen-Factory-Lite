@@ -3,6 +3,7 @@
 <div class="card">
     <h1>CSV Stock Import</h1>
     <form method="post" enctype="multipart/form-data" class="grid-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>Upload CSV<input type="file" name="csv_file" accept=".csv" required></label>
         <button type="submit" class="primary-btn">Validate and Import</button>
     </form>

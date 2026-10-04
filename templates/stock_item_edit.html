@@ -3,6 +3,7 @@
 <div class="card">
     <h2>Edit Stock Item</h2>
     <form method="post" class="grid-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>Code<input type="text" name="code" value="{{ item['code'] }}" required></label>
         <label>Name<input type="text" name="name" value="{{ item['name'] }}" required></label>
         <label>Stock Item Type<select name="item_type" required>

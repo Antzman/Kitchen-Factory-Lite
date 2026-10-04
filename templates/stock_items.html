@@ -8,6 +8,7 @@
 <div class="card">
     <h2>Create Stock Item</h2>
     <form method="post" class="grid-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>Code<input type="text" name="code" required></label>
         <label>Name<input type="text" name="name" required></label>
         <label>Stock Item Type<select name="item_type" required>
@@ -48,6 +49,7 @@
                 <td>{{ item['category_name'] }}</td>
                 <td>
                     <form method="post" action="{{ url_for('update_stock_item_status', item_id=item['id']) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <select name="active" class="status-select" aria-label="Status for {{ item['code'] }}" onchange="this.form.submit()">
                             <option value="1" {% if item['active'] %}selected{% endif %}>Active</option>
                             <option value="0" {% if not item['active'] %}selected{% endif %}>Inactive</option>

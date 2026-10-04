@@ -3,6 +3,7 @@
 {% block content %}
 <div class="page-header"><div><h1>Settings</h1><p class="muted">Choose how Kitchen Factory works for your kitchen. Each option includes a short explanation to help you decide.</p></div></div>
 <form method="post" class="settings-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 {% for section, entries in setting_sections.items() %}
 <section class="settings-group">
     <div class="settings-group-heading">

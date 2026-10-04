@@ -88,9 +88,14 @@ def test_local_registration_and_admin_temporary_password_flow(
     application.testing = True
     client = application.test_client()
 
-    assert client.get('/register').status_code == 200
+    register_page = client.get('/register')
     with client.session_transaction() as session:
         csrf_token = session['csrf_token']
+    assert register_page.status_code == 200
+    assert (
+        f'<input type="hidden" name="csrf_token" value="{csrf_token}">'.encode()
+        in register_page.data
+    )
     assert client.post('/register', data={'company_name': 'CSRF rejection'}).status_code == 302
     assert (
         'CSRF validation failed; action=rejected reason=submitted token missing'
@@ -107,7 +112,14 @@ def test_local_registration_and_admin_temporary_password_flow(
     )
     assert response.status_code == 200
     assert b'Company registered successfully. You are now signed in.' in response.data
-    assert client.get('/dashboard').status_code == 200
+    dashboard_page = client.get('/dashboard')
+    with client.session_transaction() as session:
+        csrf_token = session['csrf_token']
+    assert dashboard_page.status_code == 200
+    assert (
+        f'<input type="hidden" name="csrf_token" value="{csrf_token}">'.encode()
+        in dashboard_page.data
+    )
 
     conn = db.get_db_connection()
     registered = conn.execute(
@@ -270,6 +282,46 @@ def test_development_bypasses_invalid_csrf_token_and_logs_reason(
     assert (
         'CSRF validation failed; action=bypassed in development '
         'reason=submitted token does not match session token'
+    ) in caplog.text
+
+
+def test_login_csrf_token_is_rendered_from_session_and_request_state_is_logged(
+    tmp_path, monkeypatch, caplog,
+):
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'login-csrf-test.db')
+    monkeypatch.delenv('FLASK_ENV', raising=False)
+    caplog.set_level('INFO', logger='app')
+    from app import create_app
+
+    application = create_app()
+    application.testing = True
+    client = application.test_client()
+
+    login_page = client.get('/login')
+    with client.session_transaction() as session:
+        csrf_token = session['csrf_token']
+
+    rendered_token = (
+        f'<input type="hidden" name="csrf_token" value="{csrf_token}">'
+    ).encode()
+    assert rendered_token in login_page.data
+    assert b'document.addEventListener' not in login_page.data
+    assert 'incoming_session_cookie=False csrf_token_created=True' in caplog.text
+
+    second_login_page = client.get('/login')
+    assert rendered_token in second_login_page.data
+    response = client.post(
+        '/login',
+        data={
+            'csrf_token': csrf_token,
+            'email': 'missing-user@example.test',
+            'password': 'incorrect-password',
+        },
+    )
+    assert response.status_code == 200
+    assert (
+        'CSRF validation succeeded; action=accepted reason=none method=POST '
+        'endpoint=login incoming_session_cookie=True csrf_token_created=False'
     ) in caplog.text
 
 

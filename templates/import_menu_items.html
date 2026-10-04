@@ -14,6 +14,7 @@
     <p>Type must be <strong>Ordinary Type</strong> or <strong>Prep Screen Item</strong>. Category names must already exist and be active under Settings → Menu Categories. Existing item codes and duplicate codes in the file are not imported. Recipe lines are managed separately on each menu item's Recipe tab.</p>
     <p><a class="secondary-btn" href="{{ url_for('menu_items_import_template') }}">Download CSV Template</a></p>
     <form method="post" enctype="multipart/form-data" class="grid-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>Menu Item CSV<input type="file" name="csv_file" accept=".csv,text/csv" required></label>
         <button type="submit" class="secondary-btn">Validate and Import</button>
     </form>

@@ -7,6 +7,7 @@
     <section class="login-card">
         <div class="login-card-heading"><span class="login-eyebrow">Kitchen Factory</span><h1>Register your company</h1><p>Create a private company workspace.</p></div>
         <form method="post" class="login-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label>Company Name<input name="company_name" autocomplete="organization" required></label>
             <label>Email Address<input type="email" name="email" autocomplete="email" required></label>
             <label>Password<input type="password" name="password" autocomplete="new-password" minlength="12" required></label>

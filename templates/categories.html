@@ -3,6 +3,7 @@
 <div class="card">
     <h2>Category Management</h2>
     <form method="post" class="grid-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>Name<input type="text" name="name" required></label>
         <label>Description<input type="text" name="description"></label>
         <button type="submit" class="primary-btn">Add Category</button>
@@ -10,8 +11,26 @@
 </div>
 <div class="card">
     <table>
-        <thead><tr><th>Name</th><th>Description</th></tr></thead>
-        <tbody>{% for category in categories %}<tr><form method="post" action="{{ url_for('edit_category', category_id=category['id']) }}"><td><input name="name" value="{{ category['name'] }}"></td><td><input name="description" value="{{ category['description'] }}"></td><td><button class="secondary-btn">Save</button></form><form method="post" action="{{ url_for('category_status', category_id=category['id']) }}"><input type="hidden" name="active" value="{{ 0 if category['active'] else 1 }}"><button class="secondary-btn">{{ 'Deactivate' if category['active'] else 'Activate' }}</button></form></td></tr>{% endfor %}</tbody>
+        <thead><tr><th>Name</th><th>Description</th><th>Actions</th></tr></thead>
+        <tbody>{% for category in categories %}
+            <tr>
+                <td colspan="2">
+                    <form method="post" action="{{ url_for('edit_category', category_id=category['id']) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input name="name" value="{{ category['name'] }}">
+                        <input name="description" value="{{ category['description'] }}">
+                        <button class="secondary-btn">Save</button>
+                    </form>
+                </td>
+                <td>
+                    <form method="post" action="{{ url_for('category_status', category_id=category['id']) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="active" value="{{ 0 if category['active'] else 1 }}">
+                        <button class="secondary-btn">{{ 'Deactivate' if category['active'] else 'Activate' }}</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}</tbody>
     </table>
 </div>
 {% endblock %}

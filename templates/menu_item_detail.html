@@ -23,6 +23,7 @@
     <h2>General</h2>
     {% if not read_only %}
     <form method="post" class="grid-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>Menu Item Code<input name="code" value="{{ item['code'] if item else '' }}" maxlength="80" required></label>
         <label>Menu Item Name<input name="name" value="{{ item['name'] if item else '' }}" required></label>
         <label>Menu Item Type<select name="item_type" required>
@@ -70,6 +71,7 @@
                 {% if not read_only %}
                     <td colspan="6">
                         <form method="post" action="{{ url_for('save_menu_item_recipe', menu_item_id=item['id']) }}" class="recipe-line-form">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <input type="hidden" name="line_id" value="{{ line['id'] }}">
                             <select name="item_type" aria-label="Item type">
                                 {% for type in ['Stock Item', 'Manufactured Item', 'Portioned Item'] %}
@@ -88,7 +90,7 @@
                             <button type="submit" class="secondary-btn">Save</button>
                         </form>
                     </td>
-                    <td><form method="post" action="{{ url_for('remove_menu_item_recipe_line', menu_item_id=item['id'], line_id=line['id']) }}" onsubmit="return confirm('Delete this recipe line?');"><button type="submit" class="text-button">Delete</button></form></td>
+                    <td><form method="post" action="{{ url_for('remove_menu_item_recipe_line', menu_item_id=item['id'], line_id=line['id']) }}" onsubmit="return confirm('Delete this recipe line?');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="text-button">Delete</button></form></td>
                 {% else %}
                     <td>{{ line['item_type'] }}</td><td>{{ line['item_code'] }}</td><td>{{ line['item_name'] }}</td>
                     <td>{{ line['quantity'] }} {{ line['unit'] }}</td>
@@ -106,6 +108,7 @@
     {% if not read_only %}
     <h3>Add Recipe Line</h3>
     <form method="post" action="{{ url_for('save_menu_item_recipe', menu_item_id=item['id']) }}" class="recipe-line-form recipe-add-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <select name="item_type" aria-label="Item type">
             <option>Stock Item</option><option>Manufactured Item</option><option>Portioned Item</option>
         </select>

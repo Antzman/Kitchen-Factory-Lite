@@ -6,6 +6,7 @@
     <p><a class="secondary-btn" href="{{ url_for('admin_recovery') }}">Emergency Administrator Recovery</a></p>
     {% endif %}
     <form method="post" class="grid-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>Name<input name="display_name" required maxlength="120"></label>
         <label>Email Address<input type="email" name="email" required maxlength="254"></label>
         <label>Role
@@ -32,6 +33,7 @@
                 <tr>
                     <td colspan="5">
                         <form method="post" class="grid-form">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <input type="hidden" name="user_id" value="{{ row['id'] }}">
                             <label>Name<input name="display_name" value="{{ row['display_name'] }}" required></label>
                             <label>Email<input type="email" name="email" value="{{ row['email'] }}" required>
@@ -48,6 +50,7 @@
                             <button class="secondary-btn">Save</button>
                         </form>
                         <form method="post" action="{{ url_for('reset_user_password', user_id=row['id']) }}" class="grid-form">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button class="secondary-btn">Generate Temporary Password</button>
                         </form>
                     </td>

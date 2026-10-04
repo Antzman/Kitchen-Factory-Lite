@@ -10,6 +10,7 @@
     <div id="bulk-portioning" class="portioning-panel active" role="tabpanel">
         <p class="muted">Transfer a quantity from one existing stock item to another.</p>
         <form method="post" class="grid-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="action" value="bulk">
             <label>Source Item<select name="source_item_id">{% for item in stock %}<option value="{{ item['id'] }}">{{ item['code'] }} — {{ item['name'] }}</option>{% endfor %}</select></label>
             <label>Destination Item<select name="destination_item_id"><option value="">Select a portioned item</option>{% for item in portioned_stock %}<option value="{{ item['id'] }}">{{ item['code'] }} — {{ item['name'] }}</option>{% else %}<option value="" disabled>No Portioned Item stock items are available</option>{% endfor %}</select></label>
@@ -22,6 +23,7 @@
     <div id="yield-loss-portioning" class="portioning-panel" role="tabpanel" hidden>
         <p class="muted">Record preparation waste and move the usable yield to an optional destination item.</p>
         <form method="post" class="grid-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="action" value="yield_loss">
             <label>Source Item<select name="source_item_id">{% for item in stock %}<option value="{{ item['id'] }}">{{ item['code'] }} — {{ item['name'] }}</option>{% endfor %}</select></label>
             <label>Original Quantity<input type="number" step="0.001" name="original_quantity" value="0"></label>

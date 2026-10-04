@@ -103,13 +103,15 @@ def create_app():
 
     @app.context_processor
     def inject_settings():
-        if 'csrf_token' not in session:
-            session['csrf_token'] = secrets.token_urlsafe(32)
         return {'settings': get_settings(), 'csrf_token': session['csrf_token']}
 
     @app.before_request
     def require_login():
-        if 'csrf_token' not in session:
+        incoming_session_cookie = bool(
+            request.cookies.get(app.config['SESSION_COOKIE_NAME'])
+        )
+        csrf_token_created = 'csrf_token' not in session
+        if csrf_token_created:
             session['csrf_token'] = secrets.token_urlsafe(32)
         if request.method == 'POST':
             form_token = request.form.get('csrf_token', '')
@@ -124,26 +126,42 @@ def create_app():
             elif not hmac.compare_digest(submitted, expected):
                 failure_reason = 'submitted token does not match session token'
 
+            development_mode = os.environ.get('FLASK_ENV') == 'development'
+            validation = 'failed' if failure_reason else 'succeeded'
+            action = (
+                'bypassed in development'
+                if failure_reason and development_mode
+                else 'rejected' if failure_reason
+                else 'accepted'
+            )
+            log_method = app.logger.warning if failure_reason else app.logger.info
+            log_method(
+                'CSRF validation %s; action=%s reason=%s method=%s endpoint=%s '
+                'incoming_session_cookie=%s csrf_token_created=%s '
+                'submitted_source=%s expected_token_length=%d submitted_token_length=%d',
+                validation,
+                action,
+                failure_reason or 'none',
+                request.method,
+                request.endpoint,
+                incoming_session_cookie,
+                csrf_token_created,
+                'form' if form_token else 'header' if header_token else 'missing',
+                len(expected) if isinstance(expected, str) else -1,
+                len(submitted),
+            )
             if failure_reason:
-                development_mode = os.environ.get('FLASK_ENV') == 'development'
-                submitted_source = (
-                    'form' if form_token else 'header' if header_token else 'missing'
-                )
-                app.logger.warning(
-                    'CSRF validation failed; action=%s reason=%s method=%s '
-                    'endpoint=%s submitted_source=%s expected_token_length=%d '
-                    'submitted_token_length=%d',
-                    'bypassed in development' if development_mode else 'rejected',
-                    failure_reason,
-                    request.method,
-                    request.endpoint,
-                    submitted_source,
-                    len(expected) if isinstance(expected, str) else -1,
-                    len(submitted),
-                )
                 if not development_mode:
                     flash('Your session security token expired. Please try again.', 'error')
                     return redirect(url_for('login'))
+        elif csrf_token_created:
+            app.logger.info(
+                'CSRF token created; method=%s endpoint=%s incoming_session_cookie=%s '
+                'csrf_token_created=True',
+                request.method,
+                request.endpoint,
+                incoming_session_cookie,
+            )
         public_routes = {
             'login', 'register', 'forgot_password', 'reset_password_view',
             'verify_email', 'resend_verification', 'static',

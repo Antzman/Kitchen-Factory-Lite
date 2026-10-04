@@ -41,6 +41,7 @@
                         <a href="{{ url_for('menu_item_detail', menu_item_id=item['id'], mode='view') }}">View</a>
                         <a href="{{ url_for('menu_item_detail', menu_item_id=item['id']) }}">Edit</a>
                         <form method="post" action="{{ url_for('delete_menu_item_view', menu_item_id=item['id']) }}" onsubmit="return confirm('Delete {{ item['code'] }}?');">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit" class="text-button">Delete</button>
                         </form>
                     </td>
