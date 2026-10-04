@@ -2042,6 +2042,7 @@ def validate_import_rows(rows):
         unit = (row.get('Unit') or '').strip()
         quantity = row.get('Quantity') or ''
         category = (row.get('Category') or '').strip()
+        unit_cost = row.get('Cost Per Unit') or '0'
         if not code:
             errors.append(f'Row {idx}: missing stock code')
             continue
@@ -2066,7 +2067,22 @@ def validate_import_rows(rows):
         if not category:
             errors.append(f'Row {idx}: missing category for {code}')
             continue
-        valid_rows.append({'code': code, 'name': name, 'unit': unit, 'quantity': str(qty), 'category': category})
+        try:
+            cost = q2(unit_cost)
+        except (InvalidOperation, ValueError):
+            errors.append(f'Row {idx}: invalid cost per unit for {code}')
+            continue
+        if cost < 0:
+            errors.append(f'Row {idx}: cost per unit cannot be negative for {code}')
+            continue
+        valid_rows.append({
+            'code': code,
+            'name': name,
+            'unit': unit,
+            'quantity': str(qty),
+            'unit_cost': str(cost),
+            'category': category,
+        })
     return valid_rows, errors
 
 
@@ -2107,13 +2123,13 @@ def import_stock_items(rows, user_id):
             ).fetchone():
                 rejected.append({**row, 'error': 'Duplicate stock code found'})
                 continue
-            cur = conn.execute(
+            conn.execute(
                 '''INSERT INTO stock_items
                    (company_id, code, name, unit, quantity, category_id, active,
                     date_created, date_modified, created_by, modified_by, unit_cost)
                    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)''',
                 (company_id, row['code'], row['name'], row['unit'], row['quantity'],
-                 category['id'], now, now, user_id, user_id, '0.00')
+                 category['id'], now, now, user_id, user_id, row.get('unit_cost', '0.00'))
             )
             accepted.append(row)
         conn.commit()

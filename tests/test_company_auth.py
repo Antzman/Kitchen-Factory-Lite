@@ -1,4 +1,6 @@
 import sqlite3
+from decimal import Decimal
+
 import db
 from db import clear_tenant_context, set_tenant_context
 from services import (
@@ -74,6 +76,46 @@ def test_registration_password_hash_login_and_single_use_reset(tmp_path, monkeyp
         assert {'COMPANY REGISTERED', 'PASSWORD RESET'} <= actions
     finally:
         conn.close()
+        clear_tenant_context()
+
+
+def test_stock_item_total_cost_is_calculated_without_database_storage(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'stock-cost-test.db')
+    db.init_db()
+    user = register_company(
+        'Cost Test Kitchen', 'cost-owner@example.test',
+        'cost-test-password-123', 'cost-test-password-123',
+    )
+    set_tenant_context(user['company_id'], user['id'])
+    try:
+        conn = db.get_db_connection()
+        try:
+            category_id = conn.execute(
+                'SELECT id FROM categories WHERE company_id = ? LIMIT 1',
+                (user['company_id'],),
+            ).fetchone()['id']
+            stock_columns = {
+                row['name'] for row in conn.execute('PRAGMA table_info(stock_items)')
+            }
+        finally:
+            conn.close()
+
+        from services import create_stock_item, list_stock_items, stock_item_report
+
+        create_stock_item(
+            'COST001', 'Cost Test Item', 'kg', '3', category_id,
+            user['id'], unit_cost='2.25',
+        )
+        item = list_stock_items()[0]
+        report_rows, _, _ = stock_item_report()
+
+        assert item['unit_cost'] == '2.25'
+        assert item['total_cost'] == Decimal('6.75')
+        assert report_rows[0]['total_cost'] == Decimal('6.75')
+        assert 'total_cost' not in stock_columns
+    finally:
         clear_tenant_context()
 
 

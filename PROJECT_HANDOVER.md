@@ -34,7 +34,7 @@ system. It supports:
 - **Quantity**: The current stock balance.
 - **Unit**: `kg`, `L`, or `each`. Use `each` for countable items such as
   individual portions, packs, or pieces.
-- **Cost per Unit**: The current cost for one kilogram or litre.
+- **Cost Per Unit**: The current cost for one kilogram or litre.
 - **Total Cost**: Quantity multiplied by cost per unit.
 - **Manufacturing**: Consumes ingredient stock and increases an existing output
   stock item.

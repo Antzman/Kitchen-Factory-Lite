@@ -14,7 +14,7 @@
     <div class="metric-card"><span>Total Stock Items</span><strong>{{ totals.stock_items }}</strong></div>
     <div class="metric-card"><span>Total Active Items</span><strong>{{ totals.active_items }}</strong></div>
     <div class="metric-card"><span>Total Inactive Items</span><strong>{{ totals.inactive_items }}</strong></div>
-    <div class="metric-card"><span>Total Inventory Value</span><strong>R{{ totals.inventory_value }}</strong></div>
+    <div class="metric-card"><span>Total Inventory Value</span><strong>{{ report_settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(totals.inventory_value) }}</strong></div>
 </div>
 <div class="card report-filters">
     <form method="get" class="grid-form">
@@ -40,7 +40,7 @@
             <tbody>
             {% for row in rows %}
             <tr>
-                <td>{{ row['code'] }}</td><td>{{ row['name'] }}</td><td>{{ row['item_type'].replace('_', ' ').title() }}</td><td>{{ row['unit'] }}</td><td>{{ row['quantity'] }}</td><td>R{{ row['unit_cost'] }}</td><td>R{{ row['total_cost'] }}</td><td>{{ row['category_name'] or '' }}</td><td><span class="status-badge {{ 'status-active' if row['active'] else 'status-inactive' }}">{{ 'Active' if row['active'] else 'Inactive' }}</span></td><td>{{ row['date_modified'] }}</td>
+                <td>{{ row['code'] }}</td><td>{{ row['name'] }}</td><td>{{ row['item_type'].replace('_', ' ').title() }}</td><td>{{ row['unit'] }}</td><td>{{ row['quantity'] }}</td><td>{{ report_settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(row['unit_cost']) }}</td><td>{{ report_settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(row['total_cost']) }}</td><td>{{ row['category_name'] or '' }}</td><td><span class="status-badge {{ 'status-active' if row['active'] else 'status-inactive' }}">{{ 'Active' if row['active'] else 'Inactive' }}</span></td><td>{{ row['date_modified'] }}</td>
             </tr>
             {% else %}<tr><td colspan="10" class="muted">No stock items match the selected criteria.</td></tr>{% endfor %}
             </tbody>

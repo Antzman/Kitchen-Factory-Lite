@@ -13,8 +13,8 @@
         </select></label>
         <label>Unit<select name="unit"><option value="kg" {% if item['unit']=='kg' %}selected{% endif %}>kg</option><option value="L" {% if item['unit']=='L' %}selected{% endif %}>L</option><option value="each" {% if item['unit']=='each' %}selected{% endif %}>each</option></select></label>
         <label>Quantity<input type="number" step="0.001" name="quantity" value="{{ item['quantity'] }}"></label>
-        <label>Cost per Unit<input id="unit-cost" type="number" step="0.01" min="0" name="unit_cost" value="{{ item['unit_cost'] }}"></label>
-        <label>Total Cost<input id="total-cost" type="text" value="0.00" readonly></label>
+        <label>Cost Per Unit<input id="unit-cost" type="number" step="0.01" min="0" name="unit_cost" value="{{ item['unit_cost'] }}"></label>
+        <label>Total Cost<input id="total-cost" type="text" data-currency="{{ settings.get('reporting_currency', 'R') }}" value="{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(item['total_cost']) }}" readonly></label>
         <label>Category<select name="category_id">{% for category in categories %}<option value="{{ category['id'] }}" {% if category['id'] == item['category_id'] %}selected{% endif %}>{{ category['name'] }}</option>{% endfor %}</select></label>
         <label><input type="checkbox" name="active" {% if item['active'] %}checked{% endif %}> Active</label>
         <label class="full-width">Notes<textarea name="notes" placeholder="Add notes about this stock item">{{ item['notes'] or '' }}</textarea></label>
@@ -26,9 +26,10 @@
         var quantity = document.querySelector('input[name="quantity"]');
         var unitCost = document.getElementById('unit-cost');
         var totalCost = document.getElementById('total-cost');
+        var currency = totalCost.dataset.currency;
         function updateTotalCost() {
             var total = (Number(quantity.value) || 0) * (Number(unitCost.value) || 0);
-            totalCost.value = total.toFixed(2);
+            totalCost.value = currency + total.toFixed(2);
         }
         quantity.addEventListener('input', updateTotalCost);
         unitCost.addEventListener('input', updateTotalCost);

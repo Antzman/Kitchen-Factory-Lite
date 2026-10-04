@@ -18,7 +18,7 @@
         </select></label>
         <label>Unit<select name="unit"><option value="kg">kg</option><option value="L">L</option><option value="each">each</option></select></label>
         <label>Quantity<input type="number" step="0.001" name="quantity" value="0"></label>
-        <label>Cost per Unit<input type="number" step="0.01" min="0" name="unit_cost" value="0.00"></label>
+        <label>Cost Per Unit<input type="number" step="0.01" min="0" name="unit_cost" value="0.00"></label>
         <label>Category<select name="category_id">{% for category in categories %}<option value="{{ category['id'] }}">{{ category['name'] }}</option>{% endfor %}</select></label>
         <button type="submit" class="primary-btn">Save</button>
     </form>
@@ -32,8 +32,9 @@
             <th><button type="button" class="sort-button" data-sort-key="name">Name <span aria-hidden="true">↕</span></button></th>
             <th><button type="button" class="sort-button" data-sort-key="type">Type <span aria-hidden="true">↕</span></button></th>
             <th><button type="button" class="sort-button" data-sort-key="unit">Unit <span aria-hidden="true">↕</span></button></th>
-            <th>Qty</th>
-            <th>Cost</th>
+            <th>Quantity</th>
+            <th>Cost Per Unit</th>
+            <th>Total Cost</th>
             <th><button type="button" class="sort-button" data-sort-key="category">Category <span aria-hidden="true">↕</span></button></th>
             <th>Status</th><th>Actions</th>
         </tr></thead>
@@ -45,7 +46,8 @@
                 <td>{{ item['item_type'].replace('_', ' ').title() }}</td>
                 <td>{{ item['unit'] }}</td>
                 <td>{{ item['quantity'] }}</td>
-                <td>{{ '%.2f'|format(item['total_cost']) }}</td>
+                <td>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(item['unit_cost']) }}</td>
+                <td>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(item['total_cost']) }}</td>
                 <td>{{ item['category_name'] }}</td>
                 <td>
                     <form method="post" action="{{ url_for('update_stock_item_status', item_id=item['id']) }}">

@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from services import calculate_yield_loss
+from services import calculate_yield_loss, validate_import_rows
 
 
 def test_calculate_yield_loss_for_cleaning():
@@ -25,3 +25,54 @@ def test_calculate_yield_loss_rejects_zero_usable_quantity_and_negative_cost():
             assert False, 'Expected ValueError'
         except ValueError:
             pass
+
+
+def test_stock_import_accepts_cost_per_unit_and_defaults_to_zero():
+    rows, errors = validate_import_rows([
+        {
+            'Stock Item Code': 'FLOUR001',
+            'Stock Item Name': 'Bread Flour',
+            'Unit': 'kg',
+            'Quantity': '4',
+            'Cost Per Unit': '2.35',
+            'Category': 'Bakery',
+        },
+        {
+            'Stock Item Code': 'SUGAR001',
+            'Stock Item Name': 'Sugar',
+            'Unit': 'kg',
+            'Quantity': '3',
+            'Category': 'Bakery',
+        },
+    ])
+
+    assert errors == []
+    assert rows[0]['unit_cost'] == '2.35'
+    assert rows[1]['unit_cost'] == '0.00'
+
+
+def test_stock_import_rejects_invalid_or_negative_cost_per_unit():
+    rows, errors = validate_import_rows([
+        {
+            'Stock Item Code': 'BAD001',
+            'Stock Item Name': 'Invalid Cost',
+            'Unit': 'kg',
+            'Quantity': '1',
+            'Cost Per Unit': 'not-a-number',
+            'Category': 'Bakery',
+        },
+        {
+            'Stock Item Code': 'BAD002',
+            'Stock Item Name': 'Negative Cost',
+            'Unit': 'kg',
+            'Quantity': '1',
+            'Cost Per Unit': '-1.00',
+            'Category': 'Bakery',
+        },
+    ])
+
+    assert rows == []
+    assert errors == [
+        'Row 1: invalid cost per unit for BAD001',
+        'Row 2: cost per unit cannot be negative for BAD002',
+    ]

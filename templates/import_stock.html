@@ -2,6 +2,7 @@
 {% block content %}
 <div class="card">
     <h1>CSV Stock Import</h1>
+    <p class="muted">Required columns: Stock Item Code, Stock Item Name, Unit, Quantity, Category. Optional column: Cost Per Unit (defaults to 0).</p>
     <form method="post" enctype="multipart/form-data" class="grid-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>Upload CSV<input type="file" name="csv_file" accept=".csv" required></label>
@@ -10,9 +11,9 @@
     {% if preview %}
     <h2>Preview</h2>
     <table>
-        <thead><tr><th>Code</th><th>Name</th><th>Unit</th><th>Quantity</th><th>Category</th></tr></thead>
+        <thead><tr><th>Code</th><th>Name</th><th>Unit</th><th>Quantity</th><th>Cost Per Unit</th><th>Category</th></tr></thead>
         <tbody>
-            {% for row in preview %}<tr><td>{{ row['code'] }}</td><td>{{ row['name'] }}</td><td>{{ row['unit'] }}</td><td>{{ row['quantity'] }}</td><td>{{ row['category'] }}</td></tr>{% endfor %}
+            {% for row in preview %}<tr><td>{{ row['code'] }}</td><td>{{ row['name'] }}</td><td>{{ row['unit'] }}</td><td>{{ row['quantity'] }}</td><td>{{ settings.get('reporting_currency', 'R') }}{{ '%.2f'|format(row['unit_cost']) }}</td><td>{{ row['category'] }}</td></tr>{% endfor %}
         </tbody>
     </table>
     {% endif %}
