@@ -47,8 +47,10 @@ def test_stock_import_accepts_cost_per_unit_and_defaults_to_zero():
     ])
 
     assert errors == []
-    assert rows[0]['unit_cost'] == '2.35'
-    assert rows[1]['unit_cost'] == '0.00'
+    assert rows[0]['unit_cost'] == 2.35
+    assert rows[1]['unit_cost'] == 0.0
+    assert isinstance(rows[0]['quantity'], float)
+    assert isinstance(rows[0]['unit_cost'], float)
 
 
 def test_stock_import_rejects_invalid_or_negative_cost_per_unit():

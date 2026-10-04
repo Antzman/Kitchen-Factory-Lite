@@ -4,6 +4,7 @@ import csv
 import hmac
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -1820,7 +1821,11 @@ def list_stock_items():
     items = []
     for row in rows:
         item = dict(row)
-        item['total_cost'] = q2(Decimal(str(item['quantity'])) * Decimal(str(item['unit_cost'])))
+        item['quantity'] = float(item['quantity'])
+        item['unit_cost'] = float(item['unit_cost'])
+        item['total_cost'] = q2(
+            Decimal(str(item['quantity'])) * Decimal(str(item['unit_cost']))
+        )
         items.append(item)
     return items
 
@@ -1875,7 +1880,11 @@ def stock_item_report(search='', category='', item_type='', unit='', status='',
         rows = []
         for row in raw_rows:
             item = dict(row)
-            item['total_cost'] = q2(Decimal(str(item['quantity'])) * Decimal(str(item['unit_cost'])))
+            item['quantity'] = float(item['quantity'])
+            item['unit_cost'] = float(item['unit_cost'])
+            item['total_cost'] = q2(
+                Decimal(str(item['quantity'])) * Decimal(str(item['unit_cost']))
+            )
             rows.append(item)
         all_rows = conn.execute(f'SELECT si.*, c.name AS category_name {base}', params).fetchall()
         total_value = sum(
@@ -1896,10 +1905,16 @@ def stock_item_report(search='', category='', item_type='', unit='', status='',
 def get_stock_item(item_id):
     conn = get_db_connection()
     try:
-        return conn.execute(
+        row = conn.execute(
             'SELECT * FROM stock_items WHERE id = ? AND company_id = ?',
             (item_id, _tenant_id()),
         ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item['quantity'] = float(item['quantity'])
+        item['unit_cost'] = float(item['unit_cost'])
+        return item
     finally:
         conn.close()
 
@@ -1938,14 +1953,18 @@ def create_stock_item(code, name, unit, quantity, category_id, created_by, unit_
     if unit not in ALLOWED_UNITS:
         raise ValueError('Unit must be kg, L, or each.')
     try:
-        qty = Decimal(str(quantity))
-    except InvalidOperation:
+        qty = float(quantity)
+    except (TypeError, ValueError):
+        raise ValueError('Quantity must be numeric.')
+    if not math.isfinite(qty):
         raise ValueError('Quantity must be numeric.')
     if qty < 0:
         raise ValueError('Quantity cannot be negative.')
     try:
-        cost = q2(unit_cost)
-    except (InvalidOperation, ValueError):
+        cost = float(q2(unit_cost))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError('Cost per unit must be numeric.')
+    if not math.isfinite(cost):
         raise ValueError('Cost per unit must be numeric.')
     if cost < 0:
         raise ValueError('Cost per unit cannot be negative.')
@@ -1968,8 +1987,8 @@ def create_stock_item(code, name, unit, quantity, category_id, created_by, unit_
                (company_id, code, name, item_type, unit, quantity, category_id, active,
                 date_created, date_modified, created_by, modified_by, unit_cost)
                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)''',
-            (company_id, code.strip(), name.strip(), item_type, unit, str(qty), category_id,
-             now, now, created_by, created_by, str(cost))
+            (company_id, code.strip(), name.strip(), item_type, unit, qty, category_id,
+             now, now, created_by, created_by, cost)
         )
         conn.commit()
         return cur.lastrowid
@@ -1985,14 +2004,18 @@ def update_stock_item(item_id, code, name, unit, quantity, category_id, modified
     if unit not in ALLOWED_UNITS:
         raise ValueError('Unit must be kg, L, or each.')
     try:
-        qty = Decimal(str(quantity))
-    except InvalidOperation:
+        qty = float(quantity)
+    except (TypeError, ValueError):
+        raise ValueError('Quantity must be numeric.')
+    if not math.isfinite(qty):
         raise ValueError('Quantity must be numeric.')
     if qty < 0:
         raise ValueError('Quantity cannot be negative.')
     try:
-        cost = q2(unit_cost)
-    except (InvalidOperation, ValueError):
+        cost = float(q2(unit_cost))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError('Cost per unit must be numeric.')
+    if not math.isfinite(cost):
         raise ValueError('Cost per unit must be numeric.')
     if cost < 0:
         raise ValueError('Cost per unit cannot be negative.')
@@ -2023,8 +2046,8 @@ def update_stock_item(item_id, code, name, unit, quantity, category_id, modified
             '''UPDATE stock_items SET code = ?, name = ?, item_type = ?, unit = ?,
                quantity = ?, category_id = ?, active = ?, date_modified = ?, modified_by = ?,
                unit_cost = ?, notes = ? WHERE id = ? AND company_id = ?''',
-            (code.strip(), name.strip(), item_type, unit, str(qty), category_id,
-             1 if active else 0, now, modified_by, str(cost), notes.strip(), item_id, company_id)
+            (code.strip(), name.strip(), item_type, unit, qty, category_id,
+             1 if active else 0, now, modified_by, cost, notes.strip(), item_id, company_id)
         )
         conn.commit()
         return item_id
@@ -2057,8 +2080,11 @@ def validate_import_rows(rows):
             errors.append(f'Row {idx}: invalid unit {unit!r} for {code}')
             continue
         try:
-            qty = Decimal(str(quantity))
-        except InvalidOperation:
+            qty = float(quantity)
+        except (TypeError, ValueError):
+            errors.append(f'Row {idx}: invalid numeric quantity for {code}')
+            continue
+        if not math.isfinite(qty):
             errors.append(f'Row {idx}: invalid numeric quantity for {code}')
             continue
         if qty < 0:
@@ -2068,8 +2094,11 @@ def validate_import_rows(rows):
             errors.append(f'Row {idx}: missing category for {code}')
             continue
         try:
-            cost = q2(unit_cost)
-        except (InvalidOperation, ValueError):
+            cost = float(q2(unit_cost))
+        except (InvalidOperation, TypeError, ValueError):
+            errors.append(f'Row {idx}: invalid cost per unit for {code}')
+            continue
+        if not math.isfinite(cost):
             errors.append(f'Row {idx}: invalid cost per unit for {code}')
             continue
         if cost < 0:
@@ -2079,8 +2108,8 @@ def validate_import_rows(rows):
             'code': code,
             'name': name,
             'unit': unit,
-            'quantity': str(qty),
-            'unit_cost': str(cost),
+            'quantity': qty,
+            'unit_cost': cost,
             'category': category,
         })
     return valid_rows, errors
@@ -2109,6 +2138,19 @@ def import_stock_items(rows, user_id):
         rejected = []
         now = datetime.utcnow().isoformat(timespec='seconds')
         for row in rows:
+            try:
+                quantity = float(row['quantity'])
+                unit_cost = float(q2(row.get('unit_cost', 0)))
+            except (InvalidOperation, TypeError, ValueError):
+                rejected.append({**row, 'error': 'Quantity and cost per unit must be numeric'})
+                continue
+            if (not math.isfinite(quantity) or not math.isfinite(unit_cost)
+                    or quantity < 0 or unit_cost < 0):
+                rejected.append({
+                    **row,
+                    'error': 'Quantity and cost per unit must be finite and non-negative',
+                })
+                continue
             category = conn.execute(
                 '''SELECT id FROM categories WHERE company_id = ? AND lower(name) = lower(?)
                    AND active = 1''',
@@ -2128,8 +2170,8 @@ def import_stock_items(rows, user_id):
                    (company_id, code, name, unit, quantity, category_id, active,
                     date_created, date_modified, created_by, modified_by, unit_cost)
                    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)''',
-                (company_id, row['code'], row['name'], row['unit'], row['quantity'],
-                 category['id'], now, now, user_id, user_id, row.get('unit_cost', '0.00'))
+                (company_id, row['code'], row['name'], row['unit'], quantity,
+                 category['id'], now, now, user_id, user_id, unit_cost)
             )
             accepted.append(row)
         conn.commit()
@@ -2193,7 +2235,8 @@ def create_manufacturing_transaction(output_item_id, ingredient_rows, expected_o
                 raise ValueError(f'Ingredient quantity for {item["name"]} must be greater than zero.')
             if item['unit'] != output['unit']:
                 raise ValueError(f'Ingredient {item["name"]} uses {item["unit"]}, output uses {output["unit"]}.')
-            if not allow_negative and not calculator_mode and Decimal(item['quantity']) < q:
+            if (not allow_negative and not calculator_mode
+                    and Decimal(str(item['quantity'])) < q):
                 raise ValueError(f'Insufficient stock for {item["name"]}. Available: {item["quantity"]} {item["unit"]}.')
             total_input += q
             ingredient_cost = q * Decimal(str(item['unit_cost']))
@@ -2282,7 +2325,9 @@ def create_bulk_portioning(source_item_id, destination_item_id, quantity_portion
             raise ValueError('Portioning destination must be a Portioned Item stock type.')
         if source['unit'] != dest['unit']:
             raise ValueError('Source and destination stock items must use the same unit.')
-        if not setting_bool('allow_negative_stock', get_setting('allow_negative_stock')) and not calculator_mode and Decimal(source['quantity']) < qty:
+        if (not setting_bool('allow_negative_stock', get_setting('allow_negative_stock'))
+                and not calculator_mode
+                and Decimal(str(source['quantity'])) < qty):
             raise ValueError(f'Insufficient stock in {source["name"]}. Available: {source["quantity"]}.')
         now = datetime.utcnow().isoformat(timespec='seconds')
         transaction_notes = notes.strip()
@@ -2355,7 +2400,9 @@ def create_yield_loss_portioning(source_item_id, destination_item_id, original_q
                 raise ValueError('Portioning destination must be a Portioned Item stock type.')
             if source['unit'] != dest['unit']:
                 raise ValueError('Source and destination stock items must use the same unit.')
-        if not setting_bool('allow_negative_stock', get_setting('allow_negative_stock')) and not calculator_mode and Decimal(source['quantity']) < original:
+        if (not setting_bool('allow_negative_stock', get_setting('allow_negative_stock'))
+                and not calculator_mode
+                and Decimal(str(source['quantity'])) < original):
             raise ValueError(f'Insufficient stock in {source["name"]}. Available: {source["quantity"]}.')
         result = calculate_yield_loss(original, usable, cost)
         try:

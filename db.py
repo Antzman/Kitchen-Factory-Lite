@@ -86,14 +86,14 @@ def _rebuild_tenant_unique_tables(conn):
                 item_type TEXT NOT NULL DEFAULT 'raw_material'
                     CHECK(item_type IN ('raw_material','manufactured_item','portioned_item')),
                 unit TEXT NOT NULL CHECK(unit IN ('kg','L','each')),
-                quantity TEXT NOT NULL DEFAULT '0',
+                quantity REAL NOT NULL DEFAULT 0,
                 category_id INTEGER,
                 active INTEGER NOT NULL DEFAULT 1,
                 date_created TEXT NOT NULL,
                 date_modified TEXT NOT NULL,
                 created_by INTEGER,
                 modified_by INTEGER,
-                unit_cost TEXT NOT NULL DEFAULT '0',
+                unit_cost REAL NOT NULL DEFAULT 0,
                 notes TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY(category_id) REFERENCES categories(id)
             )
@@ -146,7 +146,17 @@ def _rebuild_tenant_unique_tables(conn):
             unique_indexes = conn.execute(
                 f'PRAGMA index_list({table_name})'
             ).fetchall()
-            if not any(index['origin'] == 'u' for index in unique_indexes):
+            stock_columns = {
+                row['name']: row['type'].upper()
+                for row in conn.execute(f'PRAGMA table_info({table_name})')
+            }
+            stock_numeric_migration = (
+                table_name == 'stock_items'
+                and any(stock_columns.get(column) != 'REAL'
+                        for column in ('quantity', 'unit_cost'))
+            )
+            has_unique_index = any(index['origin'] == 'u' for index in unique_indexes)
+            if not has_unique_index and not stock_numeric_migration:
                 conn.execute(indexes[table_name])
                 continue
             old_table = f'{table_name}_tenant_migration_old'
@@ -161,8 +171,15 @@ def _rebuild_tenant_unique_tables(conn):
             new_columns = _table_columns(conn, table_name)
             columns = [name for name in old_columns if name in new_columns]
             names = ', '.join(f'"{name}"' for name in columns)
+            selected_names = ', '.join(
+                f'CAST("{name}" AS REAL) AS "{name}"'
+                if table_name == 'stock_items' and name in {'quantity', 'unit_cost'}
+                else f'"{name}"'
+                for name in columns
+            )
             conn.execute(
-                f'INSERT INTO {table_name} ({names}) SELECT {names} FROM {old_table}'
+                f'INSERT INTO {table_name} ({names}) '
+                f'SELECT {selected_names} FROM {old_table}'
             )
             conn.execute(f'DROP TABLE {old_table}')
             conn.execute(indexes[table_name])
@@ -377,14 +394,14 @@ def init_db():
                 name TEXT NOT NULL,
                 item_type TEXT NOT NULL DEFAULT 'raw_material' CHECK(item_type IN ('raw_material','manufactured_item','portioned_item')),
                 unit TEXT NOT NULL CHECK(unit IN ('kg','L','each')),
-                quantity TEXT NOT NULL DEFAULT '0',
+                quantity REAL NOT NULL DEFAULT 0,
                 category_id INTEGER,
                 active INTEGER NOT NULL DEFAULT 1,
                 date_created TEXT NOT NULL,
                 date_modified TEXT NOT NULL,
                 created_by INTEGER,
                 modified_by INTEGER,
-                unit_cost TEXT NOT NULL DEFAULT '0',
+                unit_cost REAL NOT NULL DEFAULT 0,
                 notes TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY(category_id) REFERENCES categories(id)
             );
@@ -599,14 +616,14 @@ def init_db():
                     name TEXT NOT NULL,
                     item_type TEXT NOT NULL DEFAULT 'raw_material' CHECK(item_type IN ('raw_material','manufactured_item','portioned_item')),
                     unit TEXT NOT NULL CHECK(unit IN ('kg','L','each')),
-                    quantity TEXT NOT NULL DEFAULT '0',
+                    quantity REAL NOT NULL DEFAULT 0,
                     category_id INTEGER,
                     active INTEGER NOT NULL DEFAULT 1,
                     date_created TEXT NOT NULL,
                     date_modified TEXT NOT NULL,
                     created_by INTEGER,
                     modified_by INTEGER,
-                    unit_cost TEXT NOT NULL DEFAULT '0',
+                    unit_cost REAL NOT NULL DEFAULT 0,
                     notes TEXT NOT NULL DEFAULT '',
                     FOREIGN KEY(category_id) REFERENCES categories(id)
                 )
@@ -617,8 +634,10 @@ def init_db():
                 INSERT INTO stock_items
                 (id, code, name, item_type, unit, quantity, category_id, active,
                  date_created, date_modified, created_by, modified_by, unit_cost, notes)
-                SELECT id, code, name, item_type, unit, quantity, category_id, active,
-                       date_created, date_modified, created_by, modified_by, unit_cost, notes
+                SELECT id, code, name, item_type, unit,
+                       CAST(quantity AS REAL), category_id, active,
+                       date_created, date_modified, created_by, modified_by,
+                       CAST(unit_cost AS REAL), notes
                 FROM stock_items_legacy
                 """
             )

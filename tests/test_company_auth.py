@@ -110,11 +110,39 @@ def test_stock_item_total_cost_is_calculated_without_database_storage(
         )
         item = list_stock_items()[0]
         report_rows, _, _ = stock_item_report()
+        conn = db.get_db_connection()
+        try:
+            stored_types = conn.execute(
+                '''SELECT typeof(quantity) AS quantity_type,
+                          typeof(unit_cost) AS unit_cost_type
+                   FROM stock_items WHERE company_id = ?''',
+                (user['company_id'],),
+            ).fetchone()
+        finally:
+            conn.close()
 
-        assert item['unit_cost'] == '2.25'
+        assert isinstance(item['quantity'], float)
+        assert isinstance(item['unit_cost'], float)
+        assert item['quantity'] == 3.0
+        assert item['unit_cost'] == 2.25
         assert item['total_cost'] == Decimal('6.75')
+        assert isinstance(report_rows[0]['unit_cost'], float)
+        assert isinstance(report_rows[0]['quantity'], float)
         assert report_rows[0]['total_cost'] == Decimal('6.75')
         assert 'total_cost' not in stock_columns
+        assert stored_types is not None
+        assert stored_types['quantity_type'] == 'real'
+        assert stored_types['unit_cost_type'] == 'real'
+        conn = db.get_db_connection()
+        try:
+            stock_types = {
+                row['name']: row['type'].upper()
+                for row in conn.execute('PRAGMA table_info(stock_items)')
+            }
+        finally:
+            conn.close()
+        assert stock_types['quantity'] == 'REAL'
+        assert stock_types['unit_cost'] == 'REAL'
     finally:
         clear_tenant_context()
 
@@ -749,11 +777,11 @@ def test_manufacturing_and_portioning_are_company_scoped(tmp_path, monkeypatch):
         assert conn.execute(
             'SELECT quantity FROM stock_items WHERE id = ?',
             (ingredient_id,),
-        ).fetchone()['quantity'] == '8'
+        ).fetchone()['quantity'] == 8.0
         assert conn.execute(
             'SELECT quantity FROM stock_items WHERE id = ?',
             (portion_output,),
-        ).fetchone()['quantity'] == '0.5'
+        ).fetchone()['quantity'] == 0.5
     finally:
         conn.close()
         clear_tenant_context()
