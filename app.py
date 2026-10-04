@@ -112,11 +112,38 @@ def create_app():
         if 'csrf_token' not in session:
             session['csrf_token'] = secrets.token_urlsafe(32)
         if request.method == 'POST':
-            submitted = request.form.get('csrf_token') or request.headers.get('X-CSRF-Token', '')
+            form_token = request.form.get('csrf_token', '')
+            header_token = request.headers.get('X-CSRF-Token', '')
+            submitted = form_token or header_token
             expected = session.get('csrf_token', '')
-            if not expected or not submitted or not hmac.compare_digest(submitted, expected):
-                flash('Your session security token expired. Please try again.', 'error')
-                return redirect(url_for('login'))
+            failure_reason = None
+            if not expected:
+                failure_reason = 'session token missing'
+            elif not submitted:
+                failure_reason = 'submitted token missing'
+            elif not hmac.compare_digest(submitted, expected):
+                failure_reason = 'submitted token does not match session token'
+
+            if failure_reason:
+                development_mode = os.environ.get('FLASK_ENV') == 'development'
+                submitted_source = (
+                    'form' if form_token else 'header' if header_token else 'missing'
+                )
+                app.logger.warning(
+                    'CSRF validation failed; action=%s reason=%s method=%s '
+                    'endpoint=%s submitted_source=%s expected_token_length=%d '
+                    'submitted_token_length=%d',
+                    'bypassed in development' if development_mode else 'rejected',
+                    failure_reason,
+                    request.method,
+                    request.endpoint,
+                    submitted_source,
+                    len(expected) if isinstance(expected, str) else -1,
+                    len(submitted),
+                )
+                if not development_mode:
+                    flash('Your session security token expired. Please try again.', 'error')
+                    return redirect(url_for('login'))
         public_routes = {
             'login', 'register', 'forgot_password', 'reset_password_view',
             'verify_email', 'resend_verification', 'static',
