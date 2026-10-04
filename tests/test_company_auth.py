@@ -77,8 +77,11 @@ def test_registration_password_hash_login_and_single_use_reset(tmp_path, monkeyp
         clear_tenant_context()
 
 
-def test_local_registration_and_admin_temporary_password_flow(tmp_path, monkeypatch):
+def test_local_registration_and_admin_temporary_password_flow(
+    tmp_path, monkeypatch, caplog,
+):
     monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'web-auth-test.db')
+    monkeypatch.delenv('FLASK_ENV', raising=False)
     from app import create_app
 
     application = create_app()
@@ -89,6 +92,9 @@ def test_local_registration_and_admin_temporary_password_flow(tmp_path, monkeypa
     with client.session_transaction() as session:
         csrf_token = session['csrf_token']
     assert client.post('/register', data={'company_name': 'CSRF rejection'}).status_code == 302
+    assert (
+        'CSRF validation failed; action=rejected reason=submitted token missing'
+    ) in caplog.text
     response = client.post(
         '/register',
         data={
@@ -234,6 +240,37 @@ def test_local_registration_and_admin_temporary_password_flow(tmp_path, monkeypa
     }
     conn.close()
     assert {'PASSWORD RESET', 'TEMPORARY PASSWORD CHANGED'} <= actions
+
+
+def test_development_bypasses_invalid_csrf_token_and_logs_reason(
+    tmp_path, monkeypatch, caplog,
+):
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'development-csrf-test.db')
+    monkeypatch.setenv('FLASK_ENV', 'development')
+    from app import create_app
+
+    application = create_app()
+    application.testing = True
+    client = application.test_client()
+    client.get('/register')
+
+    response = client.post(
+        '/register',
+        data={
+            'csrf_token': 'stale-token',
+            'company_name': 'Development Test Kitchen',
+            'email': 'development-owner@example.test',
+            'password': 'development-owner-password-123',
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b'Company registered successfully. You are now signed in.' in response.data
+    assert (
+        'CSRF validation failed; action=bypassed in development '
+        'reason=submitted token does not match session token'
+    ) in caplog.text
 
 
 def test_expired_verification_token_is_invalidated_and_audited(tmp_path, monkeypatch):
