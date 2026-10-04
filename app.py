@@ -20,6 +20,7 @@ from db import (
     seed_data,
     set_tenant_context,
 )
+from demo_stock_data import seed_demo_stock_items
 from services import (
     add_audit,
     audit_entries,
@@ -158,6 +159,22 @@ def create_app():
                 raise RuntimeError('The demo account could not be loaded.')
             app.config['DEMO_USER_ID'] = demo_user['id']
             return demo_user
+
+    if DEMO_MODE:
+        demo_user = ensure_demo_user()
+        set_tenant_context(demo_user['company_id'], demo_user['id'])
+        try:
+            imported_count = seed_demo_stock_items(
+                demo_user['company_id'],
+                demo_user['id'],
+            )
+            if imported_count:
+                app.logger.info(
+                    'Demo stock database seeded successfully; imported_records=%d',
+                    imported_count,
+                )
+        finally:
+            clear_tenant_context()
 
     @app.context_processor
     def inject_settings():

@@ -132,6 +132,10 @@ company; login, registration, authentication checks, and CSRF validation are
 bypassed. The banner **“DEMO MODE - Data may be reset at any time.”** is shown
 throughout the application. All demo visitors can view and change the same demo
 company data.
+On the first startup with an empty demo inventory, the application imports the
+permanent sample stock list from `demo_stock_data.py`. The seed runs only when
+the demo company's stock database is empty; later edits are retained and no
+additional seed copies are added.
 
 To restore normal login and security checks, set `DEMO_MODE = False` in
 `app.py` and restart the application. Do not expose the demo deployment as a
