@@ -10,9 +10,14 @@
         <div class="login-card-heading">
             <span class="login-eyebrow">Kitchen Factory</span>
             <h1 id="login-heading">Welcome back</h1>
+            {% if demo_mode %}
+            <p>Continue to the shared demo workspace. No account is required.</p>
+            {% else %}
             <p>Sign in to your company's kitchen workspace.</p>
+            {% endif %}
         </div>
         <form method="post" class="login-form">
+            {% if not demo_mode %}
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label for="email">Email Address
                 <input id="email" type="email" name="email" autocomplete="username" required autofocus>
@@ -20,13 +25,16 @@
             <label for="password">Password
                 <input id="password" type="password" name="password" autocomplete="current-password" required>
             </label>
+            {% endif %}
             <button type="submit" class="primary-btn">Sign in</button>
         </form>
+        {% if not demo_mode %}
         <div class="login-help support-notice">
             <strong>Need help logging in or resetting your password?</strong>
             <span>Email: <a href="mailto:pumbaskitchenapp@gmail.com">pumbaskitchenapp@gmail.com</a></span>
         </div>
         <p class="login-help">New to Kitchen Factory? <a href="{{ url_for('register') }}">Register your company</a>.</p>
+        {% endif %}
     </section>
 </div>
 {% endblock %}

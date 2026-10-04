@@ -8,6 +8,7 @@ import secrets
 import time
 from datetime import datetime
 from decimal import Decimal
+from threading import Lock
 
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 
@@ -78,6 +79,9 @@ PASSWORD_SUPPORT_MESSAGE = (
     'Need help logging in or resetting your password? '
     'Please email: pumbaskitchenapp@gmail.com'
 )
+DEMO_MODE = True
+DEMO_COMPANY_NAME = 'Kitchen Factory Demo'
+DEMO_ACCOUNT_EMAIL = 'demo@kitchenfactory.invalid'
 
 
 def emergency_recovery_enabled():
@@ -100,13 +104,79 @@ def create_app():
     first_run = init_db()
     seed_data()
     app.config['FIRST_RUN'] = first_run
+    demo_account_lock = Lock()
+
+    def find_demo_user():
+        demo_user_id = app.config.get('DEMO_USER_ID')
+        if demo_user_id is not None:
+            return get_user_by_id(demo_user_id)
+        conn = get_db_connection()
+        try:
+            row = conn.execute(
+                '''SELECT users.id FROM users
+                   JOIN companies ON companies.id = users.company_id
+                   WHERE companies.email = ? ORDER BY users.id LIMIT 1''',
+                (DEMO_ACCOUNT_EMAIL,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return get_user_by_id(row['id']) if row else None
+
+    def ensure_demo_user():
+        with demo_account_lock:
+            demo_user = find_demo_user()
+            if demo_user is None:
+                try:
+                    demo_user = register_company(
+                        DEMO_COMPANY_NAME,
+                        DEMO_ACCOUNT_EMAIL,
+                        secrets.token_urlsafe(32),
+                    )
+                except ValueError:
+                    demo_user = find_demo_user()
+                    if demo_user is None:
+                        raise
+            conn = get_db_connection()
+            try:
+                conn.execute(
+                    'UPDATE companies SET active = 1 WHERE id = ?',
+                    (demo_user['company_id'],),
+                )
+                conn.execute(
+                    '''UPDATE users SET role = 'Company Administrator', active = 1,
+                              account_locked = 0, must_change_password = 0,
+                              email_verified = 1 WHERE id = ?''',
+                    (demo_user['id'],),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            demo_user = get_user_by_id(demo_user['id'])
+            if demo_user is None:
+                raise RuntimeError('The demo account could not be loaded.')
+            app.config['DEMO_USER_ID'] = demo_user['id']
+            return demo_user
 
     @app.context_processor
     def inject_settings():
-        return {'settings': get_settings(), 'csrf_token': session['csrf_token']}
+        return {
+            'settings': get_settings(),
+            'csrf_token': session.get('csrf_token', ''),
+            'demo_mode': DEMO_MODE,
+        }
 
     @app.before_request
     def require_login():
+        if DEMO_MODE:
+            demo_user = ensure_demo_user()
+            session['user_id'] = demo_user['id']
+            session['company_id'] = demo_user['company_id']
+            session['username'] = demo_user['email']
+            session['must_change_password'] = False
+            session.permanent = True
+            set_tenant_context(demo_user['company_id'], demo_user['id'])
+            return None
+
         incoming_session_cookie = bool(
             request.cookies.get(app.config['SESSION_COOKIE_NAME'])
         )
@@ -189,6 +259,8 @@ def create_app():
 
     @app.route('/login', methods=['GET', 'POST'])
     def login():
+        if DEMO_MODE and request.method == 'POST':
+            return redirect(url_for('dashboard'))
         if request.method == 'POST':
             email = request.form.get('email', '').strip()
             user = authenticate_user(email, request.form.get('password', ''))
@@ -210,6 +282,8 @@ def create_app():
 
     @app.route('/register', methods=['GET', 'POST'])
     def register():
+        if DEMO_MODE:
+            return redirect(url_for('dashboard'))
         if request.method == 'POST':
             try:
                 user = register_company(
@@ -271,6 +345,8 @@ def create_app():
 
     @app.route('/logout', methods=['POST'])
     def logout():
+        if DEMO_MODE:
+            return redirect(url_for('dashboard'))
         session.clear()
         clear_tenant_context()
         return redirect(url_for('login'))

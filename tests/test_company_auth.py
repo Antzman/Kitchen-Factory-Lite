@@ -82,9 +82,10 @@ def test_local_registration_and_admin_temporary_password_flow(
 ):
     monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'web-auth-test.db')
     monkeypatch.delenv('FLASK_ENV', raising=False)
-    from app import create_app
+    import app as app_module
 
-    application = create_app()
+    monkeypatch.setattr(app_module, 'DEMO_MODE', False)
+    application = app_module.create_app()
     application.testing = True
     client = application.test_client()
 
@@ -259,9 +260,10 @@ def test_development_bypasses_invalid_csrf_token_and_logs_reason(
 ):
     monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'development-csrf-test.db')
     monkeypatch.setenv('FLASK_ENV', 'development')
-    from app import create_app
+    import app as app_module
 
-    application = create_app()
+    monkeypatch.setattr(app_module, 'DEMO_MODE', False)
+    application = app_module.create_app()
     application.testing = True
     client = application.test_client()
     client.get('/register')
@@ -291,9 +293,10 @@ def test_login_csrf_token_is_rendered_from_session_and_request_state_is_logged(
     monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'login-csrf-test.db')
     monkeypatch.delenv('FLASK_ENV', raising=False)
     caplog.set_level('INFO', logger='app')
-    from app import create_app
+    import app as app_module
 
-    application = create_app()
+    monkeypatch.setattr(app_module, 'DEMO_MODE', False)
+    application = app_module.create_app()
     application.testing = True
     client = application.test_client()
 
@@ -323,6 +326,33 @@ def test_login_csrf_token_is_rendered_from_session_and_request_state_is_logged(
         'CSRF validation succeeded; action=accepted reason=none method=POST '
         'endpoint=login incoming_session_cookie=True csrf_token_created=False'
     ) in caplog.text
+
+
+def test_demo_mode_logs_in_without_credentials_or_csrf_and_shows_banner(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'demo-mode-test.db')
+    import app as app_module
+
+    monkeypatch.setattr(app_module, 'DEMO_MODE', True)
+    application = app_module.create_app()
+    application.testing = True
+    client = application.test_client()
+
+    dashboard = client.get('/dashboard')
+    assert dashboard.status_code == 200
+    assert b'DEMO MODE - Data may be reset at any time.' in dashboard.data
+    with client.session_transaction() as session:
+        assert session['username'] == 'demo@kitchenfactory.invalid'
+
+    login_page = client.get('/login')
+    assert b'name="email"' not in login_page.data
+    assert b'name="password"' not in login_page.data
+    assert b'>Sign in</button>' in login_page.data
+    assert client.post('/login').status_code == 302
+    assert client.post('/logout').status_code == 302
+    assert client.get('/users').status_code == 200
+    assert client.post('/register').status_code == 302
 
 
 def test_expired_verification_token_is_invalidated_and_audited(tmp_path, monkeypatch):
@@ -412,9 +442,10 @@ def test_production_registration_no_email_delivery_and_signs_in(
     monkeypatch.setenv('KITCHEN_FACTORY_ENV', 'production')
     monkeypatch.delenv('RESEND_API_KEY', raising=False)
 
-    from app import create_app
+    import app as app_module
 
-    application = create_app()
+    monkeypatch.setattr(app_module, 'DEMO_MODE', False)
+    application = app_module.create_app()
     application.testing = True
     client = application.test_client()
     client.get('/register')
@@ -705,10 +736,11 @@ def test_resend_replaces_previous_verification_token(tmp_path, monkeypatch):
 def test_emergency_admin_recovery_is_scoped_and_audited(tmp_path, monkeypatch):
     monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'emergency-recovery.db')
     monkeypatch.setenv('MASTER_ADMIN_KEY', 'test-master-admin-key-never-a-password')
-    from app import create_app
+    import app as app_module
     from services import create_user
 
-    application = create_app()
+    monkeypatch.setattr(app_module, 'DEMO_MODE', False)
+    application = app_module.create_app()
     application.testing = True
     client = application.test_client()
     client.get('/register')

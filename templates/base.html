@@ -28,6 +28,9 @@
             {% endif %}
         </aside>
         <main class="main-panel">
+            {% if demo_mode %}
+            <div class="demo-mode-banner" role="status">DEMO MODE - Data may be reset at any time.</div>
+            {% endif %}
             {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
             <div class="flash-container">

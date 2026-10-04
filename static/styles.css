@@ -84,6 +84,7 @@ button:hover, .primary-btn:hover { filter: brightness(.92); }
     .login-card { padding: 26px 22px 22px; }
 }
 .flash-container { margin-bottom: 16px; }
+.demo-mode-banner { margin-bottom: 16px; padding: 12px; border: 1px solid #9a6700; border-radius: 8px; background: #fff3cd; color: #664d03; font-weight: 700; }
 .flash.success { background: var(--success-bg); color: var(--success-text); border: 1px solid var(--accent); padding: 12px; border-radius: 8px; }
 .flash.error, .errors { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-text); padding: 12px; border-radius: 8px; }
 .ingredients-block { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }

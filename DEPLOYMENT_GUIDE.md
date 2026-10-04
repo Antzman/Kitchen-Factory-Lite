@@ -124,6 +124,19 @@ cloud service. For an HTTPS deployment, set `KITCHEN_FACTORY_COOKIE_SECURE=1`;
 local HTTP testing leaves this disabled so the browser can send its session
 cookie.
 
+## Temporary beta/demo mode
+
+The application currently starts with `DEMO_MODE = True` in `app.py`. In this
+mode, visitors are automatically signed in to the shared Kitchen Factory Demo
+company; login, registration, authentication checks, and CSRF validation are
+bypassed. The banner **“DEMO MODE - Data may be reset at any time.”** is shown
+throughout the application. All demo visitors can view and change the same demo
+company data.
+
+To restore normal login and security checks, set `DEMO_MODE = False` in
+`app.py` and restart the application. Do not expose the demo deployment as a
+private or production environment.
+
 Company users should create passwords of at least 12 characters. The application currently disables email verification and user-facing
 password-reset-by-email flows. To recover access, users should contact the
 support address shown in the login page and footer: `pumbaskitchenapp@gmail.com`.

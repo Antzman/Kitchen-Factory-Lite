@@ -198,7 +198,7 @@ def test_menu_item_csv_import_and_validation(menu_database):
     assert len(list_menu_items()) == 2
 
 
-def test_menu_item_screens_render(menu_database):
+def test_menu_item_screens_render(menu_database, monkeypatch):
     user_id, stock_category_id, menu_category_id = menu_database
     company_id = db.current_company_id()
     stock_id = create_stock_item(
@@ -209,9 +209,10 @@ def test_menu_item_screens_render(menu_database):
     )
     save_menu_recipe_line(menu_id, 'Stock Item', stock_id, '1', user_id)
 
-    from app import create_app
+    import app as app_module
 
-    application = create_app()
+    monkeypatch.setattr(app_module, 'DEMO_MODE', False)
+    application = app_module.create_app()
     application.testing = True
     client = application.test_client()
     with client.session_transaction() as user_session:
