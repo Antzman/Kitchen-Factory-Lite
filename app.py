@@ -20,6 +20,7 @@ from db import (
     seed_data,
     set_tenant_context,
 )
+from demo_menu_data import seed_demo_menu_data
 from demo_stock_data import seed_demo_stock_items
 from services import (
     add_audit,
@@ -173,6 +174,18 @@ def create_app():
                     'Demo stock database seeded successfully; imported_records=%d',
                     imported_count,
                 )
+            menu_seed_counts = seed_demo_menu_data(
+                demo_user['company_id'],
+                demo_user['id'],
+            )
+            app.logger.info(
+                'Demo menu database seeded; categories=%d menu_items=%d '
+                'recipe_lines=%d stock_items=%d',
+                menu_seed_counts['categories'],
+                menu_seed_counts['menu_items'],
+                menu_seed_counts['recipe_lines'],
+                menu_seed_counts['stock_items'],
+            )
         finally:
             clear_tenant_context()
 
