@@ -10,6 +10,22 @@ def test_calculate_yield_loss_for_cleaning():
     assert result['adjusted_cost_per_unit'] == Decimal('31.81818181818181818181818182')
 
 
+def test_calculate_yield_loss_target_and_cost_impact():
+    result = calculate_yield_loss(10, 5.5, 1750, 6)
+    assert result['waste_quantity'] == Decimal('4.5')
+    assert result['yield_percentage'] == Decimal('55.0')
+    assert round(result['yield_efficiency_percentage'], 2) == Decimal('91.67')
+    assert round(result['actual_cost_per_unit'], 2) == Decimal('318.18')
+    assert round(result['cost_increase_percentage'], 2) == Decimal('81.82')
+
+
+def test_calculate_yield_loss_without_expected_quantity_is_zero_and_safe():
+    result = calculate_yield_loss(10, 5.5, 1750)
+    assert result['expected_yield_quantity'] == 0
+    assert result['yield_efficiency_percentage'] == 0
+    assert result['actual_cost_per_unit'] > 0
+
+
 def test_calculate_yield_loss_rejects_zero_original_quantity():
     try:
         calculate_yield_loss(0, 5, 100)

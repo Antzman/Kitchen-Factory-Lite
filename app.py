@@ -770,9 +770,18 @@ def create_app():
                         request.form.get('usable_quantity'),
                         request.form.get('original_total_cost'),
                         user['id'],
-                        request.form.get('notes', ''), request.form.get('waste_reason', '')
+                        request.form.get('notes', ''), request.form.get('waste_reason', ''),
+                        request.form.get('expected_yield_quantity')
                     )
-                    add_audit(user['id'], 'PORTIONING COMPLETED', 'Portioning', result['session_id'], 'Yield loss transaction recorded')
+                    currency = get_setting('reporting_currency', 'R')
+                    audit_description = (
+                        'Yield loss transaction recorded: '
+                        f'expected_yield_quantity={result["expected_yield_quantity"]} {result["source_unit"]}; '
+                        f'yield_efficiency_percentage={result["yield_efficiency_percentage"]:.2f}; '
+                        f'actual_cost_per_unit={currency}{result["actual_cost_per_unit"]:.2f}/{result["source_unit"]}; '
+                        f'cost_increase_percentage={result["cost_increase_percentage"]:+.2f}'
+                    )
+                    add_audit(user['id'], 'PORTIONING COMPLETED', 'Portioning', result['session_id'], audit_description)
                     message = f'Yield loss recorded. Adjusted cost: {result["adjusted_cost_per_unit"]}'
                     if result.get('yield_warning'):
                         message += ' Warning: yield is below the configured minimum.'
@@ -783,7 +792,8 @@ def create_app():
         return render_template('portioning.html', stock=stock,
                                portioned_stock=[item for item in stock if item['item_type'] == 'portioned_item'],
                                recent=list_recent_portioning(10), user=user,
-                               require_waste_reason=get_setting('portioning_require_waste_reason', '0') == '1')
+                               require_waste_reason=get_setting('portioning_require_waste_reason', '0') == '1',
+                               reporting_currency=get_setting('reporting_currency', 'R'))
 
     @app.route('/reports')
     def reports():
@@ -791,6 +801,33 @@ def create_app():
         values = get_settings()
         return render_template('reports.html', user=user, manufacturing_history=list_manufacturing_history(20),
                                recent_portioning=list_recent_portioning(20), report_settings=values)
+
+    @app.route('/reports/portioning/export.csv')
+    def export_portioning_report():
+        rows = list_recent_portioning(1000000)
+        currency = get_setting('reporting_currency', 'R')
+        headers = [
+            'Date', 'Source', 'Destination', 'Qty', 'Waste', 'Yield %', 'Unit',
+            'Expected Yield', 'Yield Efficiency %', 'Actual Cost / Unit',
+            'Cost Impact %',
+        ]
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(headers)
+        writer.writerows([
+            [
+                row['transaction_date'], row['source_name'], row['destination_name'],
+                row['quantity_portioned'], row['waste_quantity'], row['yield_percentage'],
+                row['source_unit'],
+                row['expected_yield_quantity'], row['yield_efficiency_percentage'],
+                f"{currency}{Decimal(str(row['actual_cost_per_unit'])):.2f}/{row['source_unit']}",
+                f"{Decimal(str(row['cost_increase_percentage'])):+.2f}%",
+            ]
+            for row in rows
+        ])
+        response = app.response_class(output.getvalue(), mimetype='text/csv')
+        response.headers['Content-Disposition'] = 'attachment; filename=portioning_report.csv'
+        return response
 
     @app.route('/reports/stock-items')
     def stock_item_report_view():

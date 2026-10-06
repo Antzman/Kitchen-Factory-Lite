@@ -567,6 +567,10 @@ def init_db():
                 yield_percentage TEXT NOT NULL,
                 original_cost TEXT NOT NULL,
                 adjusted_cost TEXT NOT NULL,
+                expected_yield_quantity REAL DEFAULT 0,
+                yield_efficiency_percentage REAL DEFAULT 0,
+                actual_cost_per_unit REAL DEFAULT 0,
+                cost_increase_percentage REAL DEFAULT 0,
                 transaction_date TEXT NOT NULL,
                 user_id INTEGER NOT NULL,
                 notes TEXT,
@@ -664,6 +668,10 @@ def init_db():
             conn.execute("ALTER TABLE manufacturing_ingredients ADD COLUMN total_cost TEXT NOT NULL DEFAULT '0'")
         _migrate_company_auth(conn)
         _rebuild_tenant_unique_tables(conn)
+        _ensure_column(conn, 'portioning_transactions', 'expected_yield_quantity', 'REAL DEFAULT 0')
+        _ensure_column(conn, 'portioning_transactions', 'yield_efficiency_percentage', 'REAL DEFAULT 0')
+        _ensure_column(conn, 'portioning_transactions', 'actual_cost_per_unit', 'REAL DEFAULT 0')
+        _ensure_column(conn, 'portioning_transactions', 'cost_increase_percentage', 'REAL DEFAULT 0')
         conn.executemany(
             "INSERT OR IGNORE INTO system_settings(key, value) VALUES (?, ?)",
             list(SETTING_DEFAULTS.items()),

@@ -583,10 +583,12 @@ def decimalize(value):
     return Decimal(str(value))
 
 
-def calculate_yield_loss(original_quantity, usable_quantity, original_total_cost):
+def calculate_yield_loss(original_quantity, usable_quantity, original_total_cost,
+                         expected_yield_quantity=None):
     original = decimalize(original_quantity)
     usable = decimalize(usable_quantity)
     cost = decimalize(original_total_cost)
+    expected = decimalize(expected_yield_quantity or 0)
     if original <= 0:
         raise ValueError('Original quantity must be greater than zero.')
     if usable <= 0:
@@ -598,10 +600,23 @@ def calculate_yield_loss(original_quantity, usable_quantity, original_total_cost
     waste = original - usable
     yield_pct = (usable / original) * Decimal('100')
     adjusted_cost = cost / usable if usable > 0 else Decimal('0')
+    original_cost_per_unit = cost / original if original > 0 else Decimal('0')
+    yield_efficiency = (
+        usable / expected * Decimal('100')
+        if expected > 0 else Decimal('0')
+    )
+    cost_increase = (
+        (adjusted_cost - original_cost_per_unit) / original_cost_per_unit * Decimal('100')
+        if original_cost_per_unit > 0 else Decimal('0')
+    )
     return {
         'waste_quantity': waste,
         'yield_percentage': yield_pct,
         'adjusted_cost_per_unit': adjusted_cost,
+        'expected_yield_quantity': expected,
+        'yield_efficiency_percentage': yield_efficiency,
+        'actual_cost_per_unit': adjusted_cost,
+        'cost_increase_percentage': cost_increase,
     }
 
 
@@ -2363,13 +2378,20 @@ def create_bulk_portioning(source_item_id, destination_item_id, quantity_portion
         conn.close()
 
 
-def create_yield_loss_portioning(source_item_id, destination_item_id, original_quantity, usable_quantity, original_total_cost, user_id, notes='', waste_reason=''):
+def create_yield_loss_portioning(source_item_id, destination_item_id, original_quantity, usable_quantity, original_total_cost, user_id, notes='', waste_reason='', expected_yield_quantity=None):
     try:
         original = Decimal(str(original_quantity))
         usable = Decimal(str(usable_quantity))
         cost = Decimal(str(original_total_cost))
     except InvalidOperation:
         raise ValueError('Original quantity, usable quantity and cost must be numeric.')
+    expected_was_entered = expected_yield_quantity not in (None, '')
+    try:
+        expected = Decimal(str(expected_yield_quantity)) if expected_was_entered else Decimal('0')
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError('Expected yield quantity must be numeric.')
+    if not expected.is_finite() or (expected_was_entered and expected <= 0):
+        raise ValueError('Expected yield quantity must be greater than zero if entered.')
     if original <= 0 or usable <= 0:
         raise ValueError('Original and usable quantities must be greater than zero.')
     if usable > original:
@@ -2404,7 +2426,7 @@ def create_yield_loss_portioning(source_item_id, destination_item_id, original_q
                 and not calculator_mode
                 and Decimal(str(source['quantity'])) < original):
             raise ValueError(f'Insufficient stock in {source["name"]}. Available: {source["quantity"]}.')
-        result = calculate_yield_loss(original, usable, cost)
+        result = calculate_yield_loss(original, usable, cost, expected)
         try:
             minimum = Decimal(str(get_setting('portioning_minimum_yield', '0') or '0'))
         except InvalidOperation:
@@ -2423,11 +2445,16 @@ def create_yield_loss_portioning(source_item_id, destination_item_id, original_q
             '''INSERT INTO portioning_transactions
                (company_id, session_id, source_item_id, destination_item_id, original_quantity,
                 quantity_portioned, waste_quantity, yield_percentage, original_cost, adjusted_cost,
-                transaction_date, user_id, notes, transaction_type)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                expected_yield_quantity, yield_efficiency_percentage, actual_cost_per_unit,
+                cost_increase_percentage, transaction_date, user_id, notes, transaction_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (company_id, session_id, source_item_id, destination_item_id or source_item_id,
              str(original), str(usable), str(result['waste_quantity']),
              str(result['yield_percentage']), str(cost), str(result['adjusted_cost_per_unit']),
+             float(result['expected_yield_quantity']),
+             float(result['yield_efficiency_percentage']),
+             float(result['actual_cost_per_unit']),
+             float(result['cost_increase_percentage']),
              now, user_id, transaction_notes, 'yield_loss')
         )
         if not calculator_mode:
@@ -2441,7 +2468,16 @@ def create_yield_loss_portioning(source_item_id, destination_item_id, original_q
                     (str(usable), destination_item_id, company_id),
                 )
         conn.commit()
-        return {'session_id': session_id, 'adjusted_cost_per_unit': result['adjusted_cost_per_unit'], 'yield_warning': result['yield_warning']}
+        return {
+            'session_id': session_id,
+            'adjusted_cost_per_unit': result['adjusted_cost_per_unit'],
+            'yield_warning': result['yield_warning'],
+            'source_unit': source['unit'],
+            **{key: result[key] for key in (
+                'expected_yield_quantity', 'yield_efficiency_percentage',
+                'actual_cost_per_unit', 'cost_increase_percentage',
+            )},
+        }
     finally:
         conn.close()
 
@@ -2451,7 +2487,8 @@ def list_recent_portioning(limit=10):
     try:
         company_id = _tenant_id()
         return conn.execute(
-            '''SELECT pt.*, s.name AS source_name, d.name AS destination_name,
+            '''SELECT pt.*, s.name AS source_name, s.unit AS source_unit,
+                      d.name AS destination_name,
                       u.display_name AS user_name
                FROM portioning_transactions pt
                LEFT JOIN stock_items s ON s.id = pt.source_item_id AND s.company_id = pt.company_id
