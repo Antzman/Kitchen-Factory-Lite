@@ -19,7 +19,7 @@ _DEMO_STOCK_ROWS = (
     ('BRE003', 'Sliced White Bread', 'raw_material', 'kg', 20, 25.00, 'Bread'),
     ('BRE004', 'Pita Bread', 'raw_material', 'kg', 8, 35.00, 'Bread'),
     ('BRE005', 'Wraps', 'raw_material', 'kg', 12, 40.00, 'Bread'),
-    ('BRE006', 'Pizza Base', 'raw_material', 'kg', 20, 45.00, 'Bread')
+    ('BRE006', 'Pizza Base', 'raw_material', 'kg', 20, 45.00, 'Bread'),
     ('CHE001', 'Cheddar Cheese', 'raw_material', 'kg', 20, 110.00, 'Cheese'),
     ('CHE002', 'Mozzarella Cheese', 'raw_material', 'kg', 20, 120.00, 'Cheese'),
     ('CHE003', 'Parmesan Cheese', 'raw_material', 'kg', 5, 220.00, 'Cheese'),

@@ -22,6 +22,7 @@ _DEMO_MENU_CATEGORIES = (
     'Steaks',
     'Beverages',
     'Desserts',
+    'Starters',
 )
 
 _DEMO_MENU_ITEMS = (
