@@ -19,6 +19,7 @@ _DEMO_STOCK_ROWS = (
     ('BRE003', 'Sliced White Bread', 'raw_material', 'kg', 20, 25.00, 'Bread'),
     ('BRE004', 'Pita Bread', 'raw_material', 'kg', 8, 35.00, 'Bread'),
     ('BRE005', 'Wraps', 'raw_material', 'kg', 12, 40.00, 'Bread'),
+    ('BRE006', 'Pizza Base', 'raw_material', 'kg', 20, 45.00, 'Bread')
     ('CHE001', 'Cheddar Cheese', 'raw_material', 'kg', 20, 110.00, 'Cheese'),
     ('CHE002', 'Mozzarella Cheese', 'raw_material', 'kg', 20, 120.00, 'Cheese'),
     ('CHE003', 'Parmesan Cheese', 'raw_material', 'kg', 5, 220.00, 'Cheese'),
@@ -66,6 +67,11 @@ _DEMO_STOCK_ROWS = (
     ('SAU001', 'Tomato Base Sauce', 'raw_material', 'L', 15, 28.00, 'Sauces'),
     ('SAU002', 'Alfredo Sauce', 'manufactured_item', 'L', 10, 45.00, 'Sauces'),
     ('SAU003', 'Mushroom Sauce', 'manufactured_item', 'L', 10, 48.00, 'Sauces'),
+    ('SEA001', 'Fresh Oysters', 'portioned_item', 'kg', 10, 100.00, 'Seafood'),
+    ('SEA002', 'Mussels', 'portioned_item', 'kg', 8, 85.00, 'Seafood'),
+    ('SEA003', 'Calamari', 'portioned_item', 'kg', 12, 120.00, 'Seafood'),
+    ('SEA004', 'Prepared Oyster Meat', 'portioned_item', 'kg', 10, 181.82, 'Seafood'),
+
 )
 DEMO_STOCK_ITEMS = [
     {

@@ -35,6 +35,9 @@ _DEMO_MENU_ITEMS = (
     ('MNU008', 'Coca-Cola', 'Beverages', '25.00'),
     ('MNU009', 'Coffee', 'Beverages', '30.00'),
     ('MNU010', 'Chocolate Brownie', 'Desserts', '55.00'),
+    ('MNU011', 'Fresh Oysters 6pp', 'Starters', '165.00'),
+    ('MNU012', 'Calamari Basket', 'Starters', '135.00'),
+    ('MNU013', 'Steamed Mussels', 'Starters', '145.00'),
 )
 
 _DEMO_RECIPES = {
@@ -56,6 +59,10 @@ _DEMO_RECIPES = {
     'MNU009': (('BEV003', '0.015'), ('DAI001', '0.100')),
     'MNU010': (('BAK001', '0.080'), ('CNF001', '0.050'),
                ('DAI003', '0.030'), ('BAK003', '0.040')),
+    'MNU011': (('SEA001', '0.250')),
+    'MNU012': (('SEA003', '0.300'), ('CON003', '0.050')),
+    'MNU013': (('SEA002', '0.350'), ('DAI003', '0.020'),
+               ('HER001', '0.005')),
 }
 
 _RECIPE_ITEM_TYPE_BY_STOCK_TYPE = {
