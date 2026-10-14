@@ -20,7 +20,7 @@ def test_demo_stock_items_seed_once_and_keep_total_cost_dynamic(tmp_path, monkey
         demo_user['company_id'],
         demo_user['id'],
     )
-    assert imported_count == len(DEMO_STOCK_ITEMS) == 62
+    assert imported_count == len(DEMO_STOCK_ITEMS) == 67
     assert all(
         isinstance(item['quantity'], (int, float))
         and isinstance(item['cost_per_unit'], float)
@@ -43,7 +43,7 @@ def test_demo_stock_items_seed_once_and_keep_total_cost_dynamic(tmp_path, monkey
     finally:
         conn.close()
 
-    assert count == 62
+    assert count == 67
     assert 'total_cost' not in columns
 
     set_tenant_context(demo_user['company_id'], demo_user['id'])
@@ -119,7 +119,7 @@ def test_legacy_string_stock_values_are_migrated_to_real(tmp_path, monkeypatch):
         'legacy-demo-stock-password-123',
         'legacy-demo-stock-password-123',
     )
-    assert seed_demo_stock_items(demo_user['company_id'], demo_user['id']) == 62
+    assert seed_demo_stock_items(demo_user['company_id'], demo_user['id']) == 67
 
     conn = db.get_db_connection()
     try:

@@ -24,6 +24,9 @@ _EXPECTED_ITEMS = {
     'MNU008': ('Coca-Cola', 'Beverages', '25.00'),
     'MNU009': ('Coffee', 'Beverages', '30.00'),
     'MNU010': ('Chocolate Brownie', 'Desserts', '55.00'),
+    'MNU011': ('Fresh Oysters 6pp', 'Starters', '165.00'),
+    'MNU012': ('Calamari Basket', 'Starters', '135.00'),
+    'MNU013': ('Steamed Mussels', 'Starters', '145.00'),
 }
 
 _EXPECTED_RECIPES = {
@@ -45,6 +48,10 @@ _EXPECTED_RECIPES = {
     'MNU009': [('BEV003', '0.015'), ('DAI001', '0.100')],
     'MNU010': [('BAK001', '0.080'), ('CNF001', '0.050'),
                ('DAI003', '0.030'), ('BAK003', '0.040')],
+    'MNU011': [('SEA001', '0.250')],
+    'MNU012': [('SEA003', '0.300'), ('CON003', '0.050')],
+    'MNU013': [('SEA002', '0.350'), ('DAI003', '0.020'),
+               ('HER001', '0.005')],
 }
 
 
@@ -68,10 +75,10 @@ def test_demo_menu_seeding_is_idempotent_and_preserves_existing_records(
             demo_user['company_id'], demo_user['id']
         )
         assert seeded == {
-            'categories': 5,
-            'menu_items': 10,
-            'recipe_lines': 33,
-            'stock_items': 1,
+            'categories': 6,
+            'menu_items': 13,
+            'recipe_lines': 39,
+            'stock_items': 0,
         }
         assert seed_demo_menu_data(
             demo_user['company_id'], demo_user['id']
@@ -97,7 +104,8 @@ def test_demo_menu_seeding_is_idempotent_and_preserves_existing_records(
         assert {
             category['name'] for category in list_menu_categories()
         } >= {
-            'Burgers', 'Pizza', 'Wraps', 'Steaks', 'Beverages', 'Desserts'
+            'Burgers', 'Pizza', 'Wraps', 'Steaks', 'Beverages', 'Desserts',
+            'Starters',
         }
 
         stock = next(
@@ -106,7 +114,7 @@ def test_demo_menu_seeding_is_idempotent_and_preserves_existing_records(
         assert (
             stock['name'], stock['item_type'], stock['unit'], stock['quantity'],
             stock['unit_cost'], stock['active'], stock['category_name'],
-        ) == ('Pizza Base', 'raw_material', 'kg', 20.0, 32.0, 1, 'Bread')
+        ) == ('Pizza Base', 'raw_material', 'kg', 20.0, 45.0, 1, 'Bread')
 
         burger = next(
             item for item in list_menu_items() if item['code'] == 'MNU001'
@@ -183,17 +191,17 @@ def test_demo_menu_seeding_is_idempotent_and_preserves_existing_records(
             assert conn.execute(
                 'SELECT COUNT(*) FROM menu_categories WHERE company_id = ?',
                 (demo_user['company_id'],),
-            ).fetchone()[0] == 7
+            ).fetchone()[0] == 8
             assert conn.execute(
                 'SELECT COUNT(*) FROM menu_items WHERE company_id = ?',
                 (demo_user['company_id'],),
-            ).fetchone()[0] == 10
+            ).fetchone()[0] == 13
             assert conn.execute(
                 '''SELECT COUNT(*) FROM menu_item_recipe_lines rl
                    JOIN menu_items mi ON mi.id = rl.menu_item_id
                    WHERE mi.company_id = ?''',
                 (demo_user['company_id'],),
-            ).fetchone()[0] == 33
+            ).fetchone()[0] == 39
             assert conn.execute(
                 '''SELECT COUNT(*) FROM stock_items
                    WHERE company_id = ? AND code = 'BRE006' ''',
@@ -256,8 +264,8 @@ def test_demo_mode_startup_logs_menu_seed_counts_and_restarts_cleanly(
 
     app_module.create_app()
     assert (
-        'Demo menu database seeded; categories=5 menu_items=10 '
-        'recipe_lines=33 stock_items=1'
+        'Demo menu database seeded; categories=6 menu_items=13 '
+        'recipe_lines=39 stock_items=0'
     ) in caplog.text
     menu_page = app_module.app.test_client().get('/menu-items')
     assert menu_page.status_code == 200

@@ -1703,7 +1703,7 @@ def process_menu_item_sale(menu_item_id, quantity, user_id, external_reference=N
             (_tenant_id(), menu_item_id, str(sold_quantity), external_reference, user_id, now),
         ).lastrowid
         for line, quantity_used in deductions:
-            unit_cost = Decimal(str(line['current_unit_cost']))
+            unit_cost = q2(Decimal(str(line['current_unit_cost'])))
             total_cost = q2(quantity_used * unit_cost)
             conn.execute(
                 '''INSERT INTO menu_item_inventory_lines

@@ -518,9 +518,12 @@ def test_production_registration_no_email_delivery_and_signs_in(
     application = app_module.create_app()
     application.testing = True
     client = application.test_client()
+
     client.get('/register')
+
     with client.session_transaction() as session:
         csrf_token = session['csrf_token']
+
     response = client.post(
         '/register',
         data={
@@ -532,25 +535,16 @@ def test_production_registration_no_email_delivery_and_signs_in(
         follow_redirects=True,
     )
 
-    # Registration should sign the user in immediately and not attempt email delivery
+    # Registration should sign the user in immediately and not attempt email delivery.
     assert b'Company registered successfully. You are now signed in.' in response.data
+
     conn = db.get_db_connection()
     try:
         delivery = conn.execute(
             'SELECT COUNT(*) AS c FROM email_delivery_log'
         ).fetchone()
+
         assert delivery['c'] == 0
-    finally:
-        conn.close()
-        ).fetchone()
-        actions = {
-            row['action'] for row in conn.execute(
-                'SELECT action FROM audit_log',
-            )
-        }
-        assert delivery['status'] == 'failed'
-        assert delivery['error_type'] == 'ConnectionError'
-        assert 'VERIFICATION EMAIL FAILED' in actions
     finally:
         conn.close()
 

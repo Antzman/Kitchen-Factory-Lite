@@ -136,6 +136,10 @@ On the first startup with an empty demo inventory, the application imports the
 permanent sample stock list from `demo_stock_data.py`. The seed runs only when
 the demo company's stock database is empty; later edits are retained and no
 additional seed copies are added.
+The current portfolio dataset contains 67 stock items, including the seafood
+ingredients and Pizza Base, plus 13 menu items across seven menu categories
+with 39 recipe lines. Menu seeding is idempotent: it adds missing sample
+records without replacing existing menu or recipe edits.
 
 To restore normal login and security checks, set `DEMO_MODE = False` in
 `app.py` and restart the application. Do not expose the demo deployment as a

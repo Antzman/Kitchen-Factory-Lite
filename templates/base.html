@@ -3,28 +3,169 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}Kitchen Factory{% endblock %}</title>
+    <title>{% block title %}Common Hands{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body class="{% block body_class %}{% endblock %} mode-{{ settings.get('appearance_mode', 'light') if settings is defined else 'light' }} scheme-{{ settings.get('appearance_colour_scheme', 'kitchen_green') if settings is defined else 'kitchen_green' }}">
     <div class="app-shell">
         <aside class="sidebar">
-            <a class="brand" href="{{ url_for('about') }}">Kitchen Factory</a>
+            <a class="brand" href="{{ url_for('dashboard') }}" aria-label="Common Hands home">
+                <span class="brand-name">Common Hands</span>
+                <span class="brand-tagline">Stronger together</span>
+            </a>
             {% if session.get('username') %}
-            <nav>
-                <a class="{% if request.endpoint == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">My Dashboard</a>
-                <a class="{% if request.endpoint in ['stock_items', 'edit_stock_item', 'import_stock'] %}active{% endif %}" href="{{ url_for('stock_items') }}">Stock Item Database</a>
-                <a class="{% if request.endpoint == 'manufacturing' %}active{% endif %}" href="{{ url_for('manufacturing') }}">Manufacturing System</a>
-                <a class="{% if request.endpoint == 'portioning' %}active{% endif %}" href="{{ url_for('portioning') }}">Portioning System</a>
-                <a class="{% if request.endpoint in ['menu_items', 'export_menu_items', 'menu_items_import_template', 'import_menu_items_view', 'create_menu_item_view', 'menu_item_detail', 'delete_menu_item_view', 'save_menu_item_recipe', 'remove_menu_item_recipe_line'] %}active{% endif %}" href="{{ url_for('menu_items') }}">Menu Items</a>
-                <a class="{% if request.endpoint in ['reports', 'stock_item_report_view', 'audit_log'] %}active{% endif %}" href="{{ url_for('reports') }}">Reports</a>
-                <a class="{% if request.endpoint in ['settings', 'users', 'categories', 'menu_categories', 'edit_menu_category', 'menu_category_status', 'remove_menu_category'] %}active{% endif %}" href="{{ url_for('settings') }}">Settings</a>
-                <a class="{% if request.endpoint == 'about' %}active{% endif %}" href="{{ url_for('about') }}">About</a>
-                <form method="post" action="{{ url_for('logout') }}" class="nav-logout">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <button type="submit" class="nav-link">Logout</button>
-                </form>
+            <nav aria-label="Main navigation">
+                <a class="nav-home{% if request.endpoint == 'dashboard' and not request.args.get('view') %} active{% endif %}"
+                   href="{{ url_for('dashboard') }}">Home</a>
+
+                <details class="nav-group">
+                    <summary>Community <span class="coming-soon-badge">Coming soon</span></summary>
+                    <div class="nav-submenu">
+                        <span class="nav-placeholder">Community updates <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Member directory <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Groups and discussions <small>Coming soon</small></span>
+                    </div>
+                </details>
+
+                <details class="nav-group">
+                    <summary>Helping Hands <span class="coming-soon-badge">Coming soon</span></summary>
+                    <div class="nav-submenu">
+                        <span class="nav-placeholder">Browse requests <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Request assistance <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Offer help <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Build a solution <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Skills exchange <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Carpooling and transport <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Community projects <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Nominate someone <small>Coming soon</small></span>
+                        <span class="nav-placeholder">My commitments <small>Coming soon</small></span>
+                    </div>
+                </details>
+
+                <details class="nav-group">
+                    <summary>Give &amp; Receive <span class="coming-soon-badge">Coming soon</span></summary>
+                    <div class="nav-submenu">
+                        <span class="nav-placeholder">Request donations <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Offer donations <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Community needs <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Donation campaigns <small>Coming soon</small></span>
+                        <span class="nav-placeholder">My contributions <small>Coming soon</small></span>
+                    </div>
+                </details>
+
+                <details class="nav-group">
+                    <summary>Volunteers <span class="coming-soon-badge">Coming soon</span></summary>
+                    <div class="nav-submenu">
+                        <span class="nav-placeholder">Volunteer opportunities <small>Coming soon</small></span>
+                        <span class="nav-placeholder">My volunteer activities <small>Coming soon</small></span>
+                    </div>
+                </details>
+
+                <details class="nav-group">
+                    <summary>Marketplace <span class="coming-soon-badge">Coming soon</span></summary>
+                    <div class="nav-submenu">
+                        <span class="nav-placeholder">Browse listings <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Offer goods or services <small>Coming soon</small></span>
+                        <span class="nav-placeholder">My listings <small>Coming soon</small></span>
+                    </div>
+                </details>
+
+                {% set restaurant_endpoints = [
+                    'stock_items', 'edit_stock_item', 'update_stock_item_status', 'import_stock',
+                    'manufacturing', 'portioning', 'menu_items',
+                    'export_menu_items', 'menu_items_import_template',
+                    'import_menu_items_view', 'create_menu_item_view',
+                    'menu_item_detail', 'delete_menu_item_view',
+                    'save_menu_item_recipe', 'remove_menu_item_recipe_line',
+                    'reports', 'stock_item_report_view', 'export_stock_item_report',
+                    'export_portioning_report', 'audit_log'
+                ] %}
+                {% set hospitality_endpoints = [
+                    'stock_items', 'edit_stock_item', 'update_stock_item_status', 'import_stock',
+                    'manufacturing', 'portioning', 'menu_items',
+                    'export_menu_items', 'menu_items_import_template',
+                    'import_menu_items_view', 'create_menu_item_view',
+                    'menu_item_detail', 'delete_menu_item_view',
+                    'save_menu_item_recipe', 'remove_menu_item_recipe_line'
+                ] %}
+                {% set reporting_endpoints = [
+                    'reports', 'stock_item_report_view', 'export_stock_item_report',
+                    'export_portioning_report', 'audit_log'
+                ] %}
+                <details class="nav-group nav-restaurant"
+                    {% if request.endpoint in restaurant_endpoints or (request.endpoint == 'dashboard' and request.args.get('view') == 'restaurant') %}open{% endif %}>
+                    <summary>Departments</summary>
+                    <div class="nav-submenu">
+                        <span class="nav-subheading">The Restaurant</span>
+                        <a class="nav-sublink{% if request.endpoint == 'dashboard' and request.args.get('view') == 'restaurant' %} active{% endif %}"
+                           href="{{ url_for('dashboard', view='restaurant') }}#restaurant">Overview</a>
+                        <details class="nav-subgroup"
+                            {% if request.endpoint in hospitality_endpoints %}open{% endif %}>
+                            <summary>Hospitality Tools</summary>
+                            <div class="nav-submenu">
+                                <a class="nav-sublink{% if request.endpoint in ['stock_items', 'edit_stock_item', 'update_stock_item_status', 'import_stock'] %} active{% endif %}"
+                                   href="{{ url_for('stock_items') }}">Stock Items</a>
+                                <a class="nav-sublink{% if request.endpoint == 'manufacturing' %} active{% endif %}"
+                                   href="{{ url_for('manufacturing') }}">Manufacturing</a>
+                                <a class="nav-sublink{% if request.endpoint == 'portioning' %} active{% endif %}"
+                                   href="{{ url_for('portioning') }}">Portioning</a>
+                                <a class="nav-sublink{% if request.endpoint in ['menu_items', 'export_menu_items', 'menu_items_import_template', 'import_menu_items_view', 'create_menu_item_view', 'menu_item_detail', 'delete_menu_item_view', 'save_menu_item_recipe', 'remove_menu_item_recipe_line'] %} active{% endif %}"
+                                   href="{{ url_for('menu_items') }}">Menu Items &amp; Recipes</a>
+                            </div>
+                        </details>
+                        <details class="nav-subgroup"
+                            {% if request.endpoint in reporting_endpoints %}open{% endif %}>
+                            <summary>Reporting Tools</summary>
+                            <div class="nav-submenu">
+                                <a class="nav-sublink{% if request.endpoint in reporting_endpoints %} active{% endif %}"
+                                   href="{{ url_for('reports') }}">Reports</a>
+                            </div>
+                        </details>
+                        <details class="nav-subgroup">
+                            <summary>Other Tools</summary>
+                            <div class="nav-submenu">
+                                <span class="nav-placeholder">Future tools <small>Coming soon</small></span>
+                            </div>
+                        </details>
+                    </div>
+                </details>
+
+                <details class="nav-group">
+                    <summary>My Activity <span class="coming-soon-badge">Coming soon</span></summary>
+                    <div class="nav-submenu">
+                        <span class="nav-placeholder">My commitments <small>Coming soon</small></span>
+                        <span class="nav-placeholder">My contributions <small>Coming soon</small></span>
+                        <span class="nav-placeholder">My opportunities <small>Coming soon</small></span>
+                        <span class="nav-placeholder">My requests <small>Coming soon</small></span>
+                    </div>
+                </details>
+
+                <span class="nav-placeholder nav-single-placeholder">Notifications <small>Coming soon</small></span>
+                <span class="nav-placeholder nav-single-placeholder">My Profile <small>Coming soon</small></span>
+                <a class="nav-home{% if request.endpoint in ['settings', 'categories', 'menu_categories', 'edit_menu_category', 'menu_category_status', 'remove_menu_category'] %} active{% endif %}"
+                   href="{{ url_for('settings') }}">Application Settings</a>
+                <a class="nav-home{% if request.endpoint == 'about' %} active{% endif %}"
+                   href="{{ url_for('about') }}">About Common Hands</a>
+
+                {% if request.environ.get('kitchen_factory_user', {}).get('role') == 'Company Administrator' %}
+                <details class="nav-group">
+                    <summary>Administration</summary>
+                    <div class="nav-submenu">
+                        <a class="nav-sublink{% if request.endpoint == 'users' %} active{% endif %}"
+                           href="{{ url_for('users') }}">User Accounts</a>
+                        <span class="nav-placeholder">Member registration <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Roles and permissions <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Department access <small>Coming soon</small></span>
+                        <span class="nav-placeholder">Moderation <small>Coming soon</small></span>
+                    </div>
+                </details>
+                {% endif %}
             </nav>
+
+            <form method="post" action="{{ url_for('logout') }}" class="nav-logout">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="nav-link">Logout</button>
+            </form>
             {% endif %}
         </aside>
         <main class="main-panel">

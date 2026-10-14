@@ -1,32 +1,120 @@
 {% extends 'base.html' %}
-{% block title %}My Dashboard - Kitchen Factory{% endblock %}
+{% block title %}Home - Common Hands{% endblock %}
 {% block content %}
-<div class="page-header">
-    <h1>My Dashboard</h1>
-    <span>Welcome {{ user['display_name'] }}</span>
-</div>
-<div class="metrics-grid">
-    <div class="metric-card"><span>Total Stock Items</span><strong>{{ metrics.total_stock_items }}</strong></div>
-    <div class="metric-card"><span>Manufacturing Transactions</span><strong>{{ metrics.manufacturing_transactions }}</strong></div>
-    <div class="metric-card"><span>Portioning Transactions</span><strong>{{ metrics.portioning_transactions }}</strong></div>
-    <div class="metric-card"><span>Recent Activity</span><strong>{{ metrics.recent_activity }}</strong></div>
-</div>
-<div class="two-column">
-    <section class="card">
-        <h2>Recent Activity</h2>
-        <ul class="list">
-            {% for item in recent %}
-            <li><strong>{{ item['action'] }}</strong> — {{ item['description'] }} <span>{{ item['created_at'] }}</span></li>
-            {% endfor %}
-        </ul>
-    </section>
-    <section class="card">
-        <h2>Stock Snapshot</h2>
-        <ul class="list">
-            {% for item in stock[:8] %}
-            <li>{{ item['name'] }} — {{ item['quantity'] }} {{ item['unit'] }}</li>
-            {% endfor %}
-        </ul>
-    </section>
-</div>
+<section class="welcome-panel card" aria-labelledby="welcome-heading">
+    <span class="welcome-eyebrow">A place to serve and belong</span>
+    <h1 id="welcome-heading">Welcome to Common Hands{% if user['display_name'] %}, {{ user['display_name'] }}{% endif %}</h1>
+    <p>Stronger together. Everyone has something to give.</p>
+</section>
+
+<section class="home-section" aria-labelledby="my-activity-heading">
+    <div class="section-heading">
+        <div>
+            <span class="section-eyebrow">Your participation</span>
+            <h2 id="my-activity-heading">My Activity</h2>
+        </div>
+        <span class="coming-soon-badge">Community features coming soon</span>
+    </div>
+    <div class="activity-grid">
+        <article class="activity-card card">
+            <h3>My Commitments</h3>
+            <p class="empty-state">Community commitments are not yet available in this application.</p>
+        </article>
+        <article class="activity-card card">
+            <h3>My Contributions</h3>
+            <p class="empty-state">Community contribution tracking is not yet available. No contribution totals are shown.</p>
+        </article>
+        <article class="activity-card card">
+            <h3>My Opportunities</h3>
+            <p class="empty-state">Volunteer opportunities and community projects are not yet available.</p>
+        </article>
+        <article class="activity-card card">
+            <h3>My Requests</h3>
+            <p class="empty-state">Private assistance requests are not yet available in this application.</p>
+        </article>
+    </div>
+</section>
+
+<section class="home-section" aria-labelledby="impact-heading">
+    <div class="section-heading">
+        <div>
+            <span class="section-eyebrow">Every helping hand matters</span>
+            <h2 id="impact-heading">Your Community Impact</h2>
+        </div>
+    </div>
+    <div class="impact-panel card">
+        <p class="empty-state">Volunteer and contribution records are not yet available, so no community impact metrics are displayed.</p>
+    </div>
+</section>
+
+<section class="home-section" aria-labelledby="community-activity-heading">
+    <div class="section-heading">
+        <div>
+            <span class="section-eyebrow">Together in community</span>
+            <h2 id="community-activity-heading">What's Happening in Your Community</h2>
+        </div>
+    </div>
+    <div class="impact-panel card">
+        <p class="empty-state">Community announcements, events, and assistance updates are not yet available.</p>
+    </div>
+</section>
+
+<section class="home-section department-section" aria-labelledby="departments-heading">
+    <div class="section-heading">
+        <div>
+            <span class="section-eyebrow">Serving together</span>
+            <h2 id="departments-heading">Departments</h2>
+        </div>
+    </div>
+    <article class="department-card card">
+        <div>
+            <span class="department-label">Department</span>
+            <h3>The Restaurant</h3>
+            <p>Manage stock, food preparation, portioning, menu items, and reports.</p>
+        </div>
+        <a class="primary-btn" href="{{ url_for('dashboard', view='restaurant') }}#restaurant">Open The Restaurant</a>
+    </article>
+</section>
+
+<section class="home-section restaurant-overview" id="restaurant" aria-labelledby="restaurant-heading">
+    <div class="section-heading">
+        <div>
+            <span class="section-eyebrow">Department overview</span>
+            <h2 id="restaurant-heading">The Restaurant</h2>
+        </div>
+        <a class="secondary-btn" href="{{ url_for('stock_items') }}">Open Stock Items</a>
+    </div>
+    <div class="metrics-grid restaurant-metrics">
+        <div class="metric-card"><span>Total Stock Items</span><strong>{{ metrics.total_stock_items }}</strong></div>
+        <div class="metric-card"><span>Manufacturing Transactions</span><strong>{{ metrics.manufacturing_transactions }}</strong></div>
+        <div class="metric-card"><span>Portioning Transactions</span><strong>{{ metrics.portioning_transactions }}</strong></div>
+        <div class="metric-card"><span>Recent Restaurant Activity</span><strong>{{ metrics.recent_activity }}</strong></div>
+    </div>
+    <div class="two-column">
+        <section class="card">
+            <h3>Recent Restaurant Activity</h3>
+            {% if recent %}
+            <ul class="list">
+                {% for item in recent %}
+                <li><strong>{{ item['action'] }}</strong> — {{ item['description'] }} <span>{{ item['created_at'] }}</span></li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="empty-state">No Restaurant activity is recorded yet.</p>
+            {% endif %}
+        </section>
+        <section class="card">
+            <h3>Stock Snapshot</h3>
+            {% if stock %}
+            <ul class="list">
+                {% for item in stock[:8] %}
+                <li>{{ item['name'] }} — {{ item['quantity'] }} {{ item['unit'] }}</li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="empty-state">No stock items are available to display.</p>
+            {% endif %}
+        </section>
+    </div>
+</section>
 {% endblock %}
